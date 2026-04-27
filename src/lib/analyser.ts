@@ -9,8 +9,20 @@ export interface GapFinding {
   confidence: "HIGH" | "MEDIUM" | "LOW";
 }
 
+export interface DocumentSummary {
+  title: string;
+  purpose: string;
+  scope: string;
+  covers: string[];
+  excludes: string[];
+  keyProcesses: string[];
+  documentType: string;
+  riskLevel: "HIGH" | "MEDIUM" | "LOW";
+}
+
 export interface GapReport {
   overallScore: string;
+  summary: DocumentSummary;
   criticalGaps: GapFinding[];
   minorGaps: GapFinding[];
   compliantAreas: GapFinding[];
@@ -20,78 +32,29 @@ export interface GapReport {
   documentName: string;
 }
 
-const SYSTEM_PROMPT = `You are a pharmaceutical GMP regulatory auditor conducting a formal inspection-level gap analysis. You work to FDA 483 and EMA deficiency letter standards.
+// ── Pass 1: Understand the document ──────────────────────────────────────────
 
-CLASSIFICATION — apply these rules strictly:
-
-GAP: The requirement is completely absent from the SOP. Not mentioned, not implied, not partially covered. Also use GAP when the SOP explicitly contradicts a requirement.
-
-PARTIAL: The requirement is genuinely touched upon in the SOP but one or more specific sub-elements required by the guideline are missing. Use PARTIAL only when there is real partial coverage — not as a softened GAP.
-
-COMPLIANT: The SOP explicitly and specifically addresses the requirement. You can point to a section or sentence. Mark COMPLIANT when:
-  - The SOP has a section or explicit statement satisfying the requirement
-  - The requirement is "have a procedure" and this SOP IS that procedure
-  - The requirement asks for defined responsibilities and the SOP has a responsibilities section
-  - The requirement asks for defined records and the SOP specifies those records
-  - The requirement asks for a defined approval process and the SOP has one
-  - Do NOT downgrade to PARTIAL simply because more detail could be added — if the core requirement is met, it is COMPLIANT
-
-GAPS to specifically look for (mark as GAP if absent):
-- Quality risk management methodology (ICH Q9 tools: FMEA, risk matrix) in change classification
-- Patient safety as the primary consideration in risk/impact assessment
-- Senior management review of change control performance/outcomes
-- Post-implementation effectiveness check or monitoring
-- Emergency change / retrospective change provisions
-- Re-validation or re-qualification requirement after major changes
-- Change control scope covering outsourced activities and contract manufacturers
-- Record retention aligned with ICH Q7 (minimum 3 years post batch expiry for APIs)
-- CAPA linkage for changes arising from deviations/non-conformances
-
-Always cite exact section numbers (e.g., "ICH Q10, Section 3.2.3"). Never just a guideline name.
-
-The "finding" field: one to two precise sentences. For COMPLIANT — reference the SOP section or quote text. For GAP/PARTIAL — name exactly what is absent.
+const SUMMARISER_PROMPT = `You are a pharmaceutical regulatory expert. Read the SOP below and produce a structured understanding of it.
 
 Return ONLY valid JSON, no markdown:
 {
-  "findings": [
-    {
-      "section": "SOP section reference or 'Not addressed' if absent",
-      "status": "GAP" | "PARTIAL" | "COMPLIANT",
-      "requirement": "Exact requirement with section number",
-      "finding": "One to two sentence specific observation",
-      "guidelineReference": "e.g. ICH Q10, Section 3.2.3",
-      "confidence": "HIGH" | "MEDIUM" | "LOW"
-    }
-  ]
+  "title": "The document title as written",
+  "documentType": "e.g. SOP, Policy, Protocol, Work Instruction, Guideline",
+  "purpose": "One sentence: what this document is designed to achieve",
+  "scope": "One sentence: what operations, systems, or products this covers",
+  "covers": ["List of specific topics, processes, or activities explicitly addressed"],
+  "excludes": ["List of things explicitly excluded or out of scope — very important"],
+  "keyProcesses": ["The main procedural steps or workflow elements described"],
+  "riskLevel": "HIGH if GMP-critical (manufacturing, testing, validation, data integrity), MEDIUM if quality-adjacent, LOW if administrative"
 }`;
 
-async function callLLM(sopText: string, guidelineChunks: SearchResult[], apiKey: string, isOpenRouter = false): Promise<GapFinding[]> {
-  const chunksText = guidelineChunks
-    .map((c, i) => `[REQ-${String(i + 1).padStart(2, "0")}] ${c.metadata.guidelineReference || c.metadata.source} — ${c.metadata.section}\n${c.metadata.text}`)
-    .join("\n\n---\n\n");
-
-  const userMessage = `Audit the SOP below against every requirement block listed. Produce one finding per [REQ-XX] block.
-
-Apply balanced judgement: mark COMPLIANT when genuinely met, GAP when genuinely absent, PARTIAL when partially covered. Do not over-penalise or under-penalise.
-
-=== SOP TEXT ===
-${sopText.slice(0, 12000)}
-
-=== REQUIREMENTS TO AUDIT (produce one finding for each) ===
-${chunksText}`;
-
+async function summariseDocument(sopText: string, apiKey: string, isOpenRouter = false): Promise<DocumentSummary> {
   const url = isOpenRouter
     ? "https://openrouter.ai/api/v1/chat/completions"
     : "https://integrate.api.nvidia.com/v1/chat/completions";
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${apiKey}`,
-  };
-  if (isOpenRouter) {
-    headers["HTTP-Referer"] = "https://kjrlabs.in";
-    headers["X-Title"] = "Pharma Compliance Gap Analyser";
-  }
+  const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` };
+  if (isOpenRouter) { headers["HTTP-Referer"] = "https://kjrlabs.in"; headers["X-Title"] = "Pharma Compliance Gap Analyser"; }
 
   const response = await fetch(url, {
     method: "POST",
@@ -99,7 +62,113 @@ ${chunksText}`;
     body: JSON.stringify({
       model: isOpenRouter ? "anthropic/claude-3.5-sonnet" : "meta/llama-3.3-70b-instruct",
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: SUMMARISER_PROMPT },
+        { role: "user", content: `=== DOCUMENT ===\n${sopText.slice(0, 8000)}` },
+      ],
+      temperature: 0.0,
+      max_tokens: 1024,
+    }),
+  });
+
+  if (!response.ok) throw new Error(`Summariser error: ${await response.text()}`);
+  const data = await response.json();
+  const content = data.choices[0].message.content;
+  return JSON.parse(content.replace(/```json\n?|\n?```/g, "").trim());
+}
+
+// ── Pass 2: Gap analysis with document context ────────────────────────────────
+
+function buildAnalysisPrompt(summary: DocumentSummary): string {
+  return `You are a pharmaceutical GMP regulatory auditor conducting a formal inspection-level gap analysis.
+
+DOCUMENT CONTEXT (use this to inform every finding):
+- Type: ${summary.documentType}
+- Purpose: ${summary.purpose}
+- Scope: ${summary.scope}
+- This document covers: ${summary.covers.join("; ")}
+- This document explicitly excludes: ${summary.excludes.length ? summary.excludes.join("; ") : "nothing stated"}
+- Key processes described: ${summary.keyProcesses.join("; ")}
+- GMP Risk Level: ${summary.riskLevel}
+
+Use this context when evaluating each requirement. If the document's scope makes a requirement non-applicable, note that. If the document explicitly excludes something required, that is a GAP.
+
+CLASSIFICATION RULES:
+
+GAP: Requirement is completely absent from the document. Not mentioned, not implied. Also GAP when the document explicitly contradicts or excludes a requirement.
+
+PARTIAL: Requirement is genuinely touched upon but one or more specific sub-elements are missing. Only use when there is real partial coverage.
+
+COMPLIANT: Requirement is explicitly and specifically addressed. You can point to a section. Mark COMPLIANT when:
+  - Document has a section or statement satisfying the requirement
+  - Requirement is "have a procedure" and this IS that procedure
+  - Requirement asks for defined responsibilities and document has a responsibilities section
+  - Requirement asks for defined records and document specifies those records
+  - Core requirement is met — do not downgrade for lack of additional detail
+
+KNOWN GAPS to look for (mark GAP if absent):
+- ICH Q9 risk tools (FMEA, risk matrix) in change/risk assessment
+- Patient safety as primary consideration in impact assessment
+- Senior management review of quality system performance
+- Post-implementation effectiveness monitoring
+- Emergency or retrospective change provisions
+- Re-validation/re-qualification after major changes
+- Change control scope covering outsourced activities
+- Record retention per ICH Q7 (3 years post batch expiry for APIs)
+- CAPA linkage for changes from deviations
+
+Always cite exact section numbers (e.g., "ICH Q10, Section 3.2.3").
+The "finding" field: 1–2 precise sentences. For COMPLIANT — reference the SOP section. For GAP/PARTIAL — name exactly what is missing.
+
+Return ONLY valid JSON:
+{
+  "findings": [
+    {
+      "section": "SOP section reference or 'Not addressed'",
+      "status": "GAP" | "PARTIAL" | "COMPLIANT",
+      "requirement": "Exact requirement with section number",
+      "finding": "1-2 sentence specific observation",
+      "guidelineReference": "e.g. ICH Q10, Section 3.2.3",
+      "confidence": "HIGH" | "MEDIUM" | "LOW"
+    }
+  ]
+}`;
+}
+
+async function runAnalysis(
+  sopText: string,
+  summary: DocumentSummary,
+  guidelineChunks: SearchResult[],
+  apiKey: string,
+  isOpenRouter = false
+): Promise<GapFinding[]> {
+  const systemPrompt = buildAnalysisPrompt(summary);
+
+  const chunksText = guidelineChunks
+    .map((c, i) => `[REQ-${String(i + 1).padStart(2, "0")}] ${c.metadata.guidelineReference || c.metadata.source} — ${c.metadata.section}\n${c.metadata.text}`)
+    .join("\n\n---\n\n");
+
+  const userMessage = `Audit the SOP below against every requirement block. Produce one finding per [REQ-XX] block. Use the document context from your system prompt.
+
+=== SOP TEXT ===
+${sopText.slice(0, 12000)}
+
+=== REQUIREMENTS TO AUDIT ===
+${chunksText}`;
+
+  const url = isOpenRouter
+    ? "https://openrouter.ai/api/v1/chat/completions"
+    : "https://integrate.api.nvidia.com/v1/chat/completions";
+
+  const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` };
+  if (isOpenRouter) { headers["HTTP-Referer"] = "https://kjrlabs.in"; headers["X-Title"] = "Pharma Compliance Gap Analyser"; }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: isOpenRouter ? "anthropic/claude-3.5-sonnet" : "meta/llama-3.3-70b-instruct",
+      messages: [
+        { role: "system", content: systemPrompt },
         { role: "user", content: userMessage },
       ],
       temperature: 0.0,
@@ -107,12 +176,14 @@ ${chunksText}`;
     }),
   });
 
-  if (!response.ok) throw new Error(`LLM error: ${await response.text()}`);
+  if (!response.ok) throw new Error(`Analysis error: ${await response.text()}`);
   const data = await response.json();
   const content = data.choices[0].message.content;
   const parsed = JSON.parse(content.replace(/```json\n?|\n?```/g, "").trim());
   return parsed.findings;
 }
+
+// ── Main export ───────────────────────────────────────────────────────────────
 
 export async function runGapAnalysis(
   sopText: string,
@@ -120,16 +191,41 @@ export async function runGapAnalysis(
   guidelineNames: string[],
   documentName: string
 ): Promise<GapReport> {
-  let findings: GapFinding[];
+  const nvidiaKey = process.env.NVIDIA_API_KEY!;
+  const openRouterKey = process.env.OPENROUTER_API_KEY;
 
+  // Pass 1: Summarise document
+  let summary: DocumentSummary;
   try {
-    findings = await callLLM(sopText, guidelineChunks, process.env.NVIDIA_API_KEY!, false);
-  } catch (err) {
-    console.warn("NVIDIA NIM failed, falling back to OpenRouter:", err);
-    findings = await callLLM(sopText, guidelineChunks, process.env.OPENROUTER_API_KEY!, true);
+    summary = await summariseDocument(sopText, nvidiaKey, false);
+  } catch {
+    try {
+      summary = await summariseDocument(sopText, openRouterKey!, true);
+    } catch {
+      // Fallback minimal summary if both fail
+      summary = {
+        title: documentName,
+        documentType: "SOP",
+        purpose: "Not determined",
+        scope: "Not determined",
+        covers: [],
+        excludes: [],
+        keyProcesses: [],
+        riskLevel: "HIGH",
+      };
+    }
   }
 
-  // Deduplicate by guideline ref + requirement prefix
+  // Pass 2: Gap analysis with document context
+  let findings: GapFinding[];
+  try {
+    findings = await runAnalysis(sopText, summary, guidelineChunks, nvidiaKey, false);
+  } catch (err) {
+    console.warn("NVIDIA NIM failed on analysis, falling back:", err);
+    findings = await runAnalysis(sopText, summary, guidelineChunks, openRouterKey!, true);
+  }
+
+  // Deduplicate
   const seen = new Set<string>();
   findings = findings.filter((f) => {
     const key = `${f.guidelineReference}||${f.requirement.slice(0, 60)}`;
@@ -144,6 +240,7 @@ export async function runGapAnalysis(
 
   return {
     overallScore: `${compliantAreas.length}/${findings.length} requirements met`,
+    summary,
     criticalGaps,
     minorGaps,
     compliantAreas,
