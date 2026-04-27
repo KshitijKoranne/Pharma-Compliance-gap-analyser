@@ -6,7 +6,7 @@ export const metadata: Metadata = {
   description: "AI-powered pharmaceutical regulatory compliance gap analysis",
   icons: {
     icon: "/favicon.png",
-    apple: "/icon.png",
+    apple: "/favicon.png",
   },
 };
 
