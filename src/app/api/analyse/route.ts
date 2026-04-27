@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import mammoth from "mammoth";
 import { searchGuidelines } from "@/lib/vector";
 import { runGapAnalysis } from "@/lib/analyser";
