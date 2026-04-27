@@ -20,42 +20,45 @@ export interface GapReport {
   documentName: string;
 }
 
-const SYSTEM_PROMPT = `You are a pharmaceutical GMP regulatory auditor conducting a formal inspection-level gap analysis. You work to FDA 483 and EMA deficiency letter standards. You are known for being exacting and uncompromising.
+const SYSTEM_PROMPT = `You are a pharmaceutical GMP regulatory auditor conducting a formal inspection-level gap analysis. You work to FDA 483 and EMA deficiency letter standards.
 
-CLASSIFICATION RULES — follow these exactly, no exceptions:
+CLASSIFICATION — apply these rules strictly:
 
-GAP: The requirement is ABSENT from the SOP. Not mentioned. Not implied. Not partially addressed. Completely missing. Also use GAP when the SOP explicitly contradicts a requirement (e.g., excludes something that must be included).
+GAP: The requirement is completely absent from the SOP. Not mentioned, not implied, not partially covered. Also use GAP when the SOP explicitly contradicts a requirement.
 
-PARTIAL: The requirement is MENTIONED or TOUCHED UPON in the SOP but does not fully satisfy it. Something specific is missing from the implementation. Use this only when there is genuine partial coverage — not as a soft version of GAP.
+PARTIAL: The requirement is genuinely touched upon in the SOP but one or more specific sub-elements required by the guideline are missing. Use PARTIAL only when there is real partial coverage — not as a softened GAP.
 
-COMPLIANT: The requirement is EXPLICITLY and SPECIFICALLY addressed in the SOP text. You can point to a specific sentence or paragraph that satisfies it. "Implied" compliance does not count. "General intent" does not count.
+COMPLIANT: The SOP explicitly and specifically addresses the requirement. You can point to a section or sentence. Mark COMPLIANT when:
+  - The SOP has a section or explicit statement satisfying the requirement
+  - The requirement is "have a procedure" and this SOP IS that procedure
+  - The requirement asks for defined responsibilities and the SOP has a responsibilities section
+  - The requirement asks for defined records and the SOP specifies those records
+  - The requirement asks for a defined approval process and the SOP has one
+  - Do NOT downgrade to PARTIAL simply because more detail could be added — if the core requirement is met, it is COMPLIANT
 
-CRITICAL RULES:
-1. If you cannot quote or closely paraphrase specific SOP text that addresses the requirement, it is NOT compliant.
-2. "The SOP does not explicitly mention X" = GAP, not PARTIAL.
-3. "The SOP mentions X but omits Y which is required" = PARTIAL.
-4. Risk assessment methodology (e.g., FMEA, risk matrix per ICH Q9) being absent = GAP.
-5. Patient safety as primary risk consideration being absent = GAP.
-6. Management review of change control outcomes being absent = GAP.
-7. Effectiveness checks / post-implementation monitoring being absent = GAP.
-8. Emergency or retrospective change provisions being absent = GAP.
-9. Re-validation or re-qualification requirement after major changes being absent = GAP.
-10. Outsourced activities / contract manufacturers exclusion from scope = GAP.
-11. Record retention period that conflicts with ICH Q7 = GAP.
-12. Missing CAPA linkage for identified gaps = GAP.
+GAPS to specifically look for (mark as GAP if absent):
+- Quality risk management methodology (ICH Q9 tools: FMEA, risk matrix) in change classification
+- Patient safety as the primary consideration in risk/impact assessment
+- Senior management review of change control performance/outcomes
+- Post-implementation effectiveness check or monitoring
+- Emergency change / retrospective change provisions
+- Re-validation or re-qualification requirement after major changes
+- Change control scope covering outsourced activities and contract manufacturers
+- Record retention aligned with ICH Q7 (minimum 3 years post batch expiry for APIs)
+- CAPA linkage for changes arising from deviations/non-conformances
 
-Always cite exact section numbers (e.g., "ICH Q10, Section 3.2.3"). Never cite just a guideline name.
+Always cite exact section numbers (e.g., "ICH Q10, Section 3.2.3"). Never just a guideline name.
 
-The "finding" field must be specific: name the exact element missing, or quote the SOP text that satisfies the requirement. One or two precise sentences only.
+The "finding" field: one to two precise sentences. For COMPLIANT — reference the SOP section or quote text. For GAP/PARTIAL — name exactly what is absent.
 
-Return ONLY valid JSON — no markdown fences, no preamble:
+Return ONLY valid JSON, no markdown:
 {
   "findings": [
     {
-      "section": "SOP section reference (e.g. '5.3 Impact Assessment') or 'Not addressed' if absent",
+      "section": "SOP section reference or 'Not addressed' if absent",
       "status": "GAP" | "PARTIAL" | "COMPLIANT",
       "requirement": "Exact requirement with section number",
-      "finding": "Specific one or two sentence observation citing SOP text or naming the missing element",
+      "finding": "One to two sentence specific observation",
       "guidelineReference": "e.g. ICH Q10, Section 3.2.3",
       "confidence": "HIGH" | "MEDIUM" | "LOW"
     }
@@ -67,39 +70,47 @@ async function callLLM(sopText: string, guidelineChunks: SearchResult[], apiKey:
     .map((c, i) => `[REQ-${String(i + 1).padStart(2, "0")}] ${c.metadata.guidelineReference || c.metadata.source} — ${c.metadata.section}\n${c.metadata.text}`)
     .join("\n\n---\n\n");
 
-  const userMessage = `You are auditing the following SOP. Apply inspection-level scrutiny. Check every requirement block below against the SOP text. Do not skip any requirement.
+  const userMessage = `Audit the SOP below against every requirement block listed. Produce one finding per [REQ-XX] block.
 
-For each [REQ-XX] block, produce exactly one finding. If the SOP does not address it at all, status = GAP. If partially, status = PARTIAL. Only if explicitly and specifically addressed, status = COMPLIANT.
+Apply balanced judgement: mark COMPLIANT when genuinely met, GAP when genuinely absent, PARTIAL when partially covered. Do not over-penalise or under-penalise.
 
 === SOP TEXT ===
 ${sopText.slice(0, 12000)}
 
-=== REQUIREMENTS TO AUDIT AGAINST (check every single one) ===
-${chunksText}
-
-Return one finding per requirement block above. Be strict.`;
+=== REQUIREMENTS TO AUDIT (produce one finding for each) ===
+${chunksText}`;
 
   const url = isOpenRouter
     ? "https://openrouter.ai/api/v1/chat/completions"
     : "https://integrate.api.nvidia.com/v1/chat/completions";
 
-  const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` };
-  if (isOpenRouter) { headers["HTTP-Referer"] = "https://kjrlabs.in"; headers["X-Title"] = "Pharma Compliance Gap Analyser"; }
-
-  const body = {
-    model: isOpenRouter ? "anthropic/claude-3.5-sonnet" : "meta/llama-3.3-70b-instruct",
-    messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: userMessage }],
-    temperature: 0.0,
-    max_tokens: 8192,
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${apiKey}`,
   };
+  if (isOpenRouter) {
+    headers["HTTP-Referer"] = "https://kjrlabs.in";
+    headers["X-Title"] = "Pharma Compliance Gap Analyser";
+  }
 
-  const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
-  if (!response.ok) throw new Error(`LLM error (${isOpenRouter ? "OpenRouter" : "NVIDIA"}): ${await response.text()}`);
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: isOpenRouter ? "anthropic/claude-3.5-sonnet" : "meta/llama-3.3-70b-instruct",
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userMessage },
+      ],
+      temperature: 0.0,
+      max_tokens: 8192,
+    }),
+  });
 
+  if (!response.ok) throw new Error(`LLM error: ${await response.text()}`);
   const data = await response.json();
   const content = data.choices[0].message.content;
-  const clean = content.replace(/```json\n?|\n?```/g, "").trim();
-  const parsed = JSON.parse(clean);
+  const parsed = JSON.parse(content.replace(/```json\n?|\n?```/g, "").trim());
   return parsed.findings;
 }
 
@@ -118,7 +129,7 @@ export async function runGapAnalysis(
     findings = await callLLM(sopText, guidelineChunks, process.env.OPENROUTER_API_KEY!, true);
   }
 
-  // Deduplicate findings by guidelineReference + requirement similarity
+  // Deduplicate by guideline ref + requirement prefix
   const seen = new Set<string>();
   findings = findings.filter((f) => {
     const key = `${f.guidelineReference}||${f.requirement.slice(0, 60)}`;
