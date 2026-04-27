@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import mammoth from "mammoth";
-import { searchGuidelines } from "@/lib/vector";
+import { searchGuidelines, type SearchResult } from "@/lib/vector";
 import { runGapAnalysis } from "@/lib/analyser";
 import { GUIDELINES } from "@/lib/guidelines-registry";
 
@@ -24,8 +24,30 @@ export async function POST(request: NextRequest) {
     if (!sopText || sopText.trim().length < 100)
       return NextResponse.json({ error: "Document appears empty or could not be parsed" }, { status: 400 });
 
-    // Use first 3000 chars for semantic search query — covers scope/purpose which is most representative
-    const chunks = await searchGuidelines(sopText.slice(0, 3000), guidelineIds, 25);
+    // Multi-pass semantic search: query with 4 different SOP segments
+    // to maximise diversity of guideline chunks retrieved
+    const L = sopText.length;
+    const queries = [
+      sopText.slice(0, 1500),
+      sopText.slice(Math.floor(L * 0.25), Math.floor(L * 0.25) + 1500),
+      sopText.slice(Math.floor(L * 0.5),  Math.floor(L * 0.5)  + 1500),
+      sopText.slice(Math.floor(L * 0.75), Math.floor(L * 0.75) + 1500),
+    ];
+
+    const allChunksMap = new Map<string, SearchResult>();
+
+    await Promise.all(
+      queries.map(async (q) => {
+        const results = await searchGuidelines(q, guidelineIds, 12);
+        for (const r of results) {
+          if (!allChunksMap.has(r.id)) allChunksMap.set(r.id, r);
+        }
+      })
+    );
+
+    const chunks = [...allChunksMap.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 30);
 
     if (chunks.length === 0)
       return NextResponse.json({ error: "No relevant guideline content found. Ensure guidelines are ingested." }, { status: 400 });
