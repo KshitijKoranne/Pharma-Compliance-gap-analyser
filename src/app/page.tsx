@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import type { GapReport, GapFinding } from "@/lib/analyser";
 import { GUIDELINES } from "@/lib/guidelines-registry";
 
@@ -9,70 +9,69 @@ const CATEGORIES = [
     id: "ICH",
     label: "ICH",
     fullName: "ICH Quality Guidelines",
-    description: "Q1–Q14 series covering stability, impurities, validation, GMP, QRM, QbD, lifecycle",
-    color: "blue",
+    description: "Q1–Q14 series — stability, impurities, analytical validation, GMP, risk management, QbD, lifecycle",
+    icon: "◈",
   },
   {
     id: "EU_GMP",
     label: "EU GMP",
-    fullName: "EudraLex Volume 4",
-    description: "Annex 1, 11, 15 — sterile manufacturing, computerised systems, qualification & validation",
-    color: "violet",
+    fullName: "EU Good Manufacturing Practice",
+    description: "EudraLex Volume 4 — sterile manufacturing, computerised systems, qualification & validation",
+    icon: "◉",
   },
   {
     id: "FDA",
     label: "US FDA",
     fullName: "US FDA Regulations & Guidance",
-    description: "21 CFR Part 11, process validation guidance — electronic records, CGMP",
-    color: "amber",
+    description: "21 CFR regulations and FDA guidance — electronic records, CGMP, process validation",
+    icon: "◎",
   },
   {
     id: "WHO",
     label: "WHO",
     fullName: "WHO GMP Guidelines",
-    description: "WHO good manufacturing practices for pharmaceutical products",
-    color: "emerald",
+    description: "World Health Organization good manufacturing practices for pharmaceutical products",
+    icon: "○",
   },
   {
     id: "ISO",
     label: "ISO",
     fullName: "ISO Standards",
-    description: "ISO 9001, ISO 13485 — quality management systems",
-    color: "rose",
+    description: "ISO 9001, ISO 13485 — quality management systems for medical devices and pharma",
+    icon: "◇",
   },
 ] as const;
 
 type CategoryId = (typeof CATEGORIES)[number]["id"];
 
-const COLOR_MAP: Record<string, { card: string; border: string; badge: string; check: string }> = {
-  blue:   { card: "hover:border-blue-600/60 hover:bg-blue-950/20",   border: "border-blue-600/70 bg-blue-950/20",   badge: "bg-blue-900/50 text-blue-300 border-blue-700/50",   check: "bg-blue-500 border-blue-500" },
-  violet: { card: "hover:border-violet-600/60 hover:bg-violet-950/20", border: "border-violet-600/70 bg-violet-950/20", badge: "bg-violet-900/50 text-violet-300 border-violet-700/50", check: "bg-violet-500 border-violet-500" },
-  amber:  { card: "hover:border-amber-600/60 hover:bg-amber-950/20",  border: "border-amber-600/70 bg-amber-950/20",  badge: "bg-amber-900/50 text-amber-300 border-amber-700/50",  check: "bg-amber-500 border-amber-500" },
-  emerald:{ card: "hover:border-emerald-600/60 hover:bg-emerald-950/20", border: "border-emerald-600/70 bg-emerald-950/20", badge: "bg-emerald-900/50 text-emerald-300 border-emerald-700/50", check: "bg-emerald-500 border-emerald-500" },
-  rose:   { card: "hover:border-rose-600/60 hover:bg-rose-950/20",    border: "border-rose-600/70 bg-rose-950/20",    badge: "bg-rose-900/50 text-rose-300 border-rose-700/50",    check: "bg-rose-500 border-rose-500" },
-};
-
-const STATUS_CONFIG = {
-  COMPLIANT: { border: "border-emerald-700/40 bg-emerald-950/30", badge: "bg-emerald-900/60 text-emerald-300 border border-emerald-700/50" },
-  PARTIAL:   { border: "border-amber-700/40 bg-amber-950/30",     badge: "bg-amber-900/60 text-amber-300 border border-amber-700/50" },
-  GAP:       { border: "border-red-800/40 bg-red-950/30",         badge: "bg-red-900/60 text-red-300 border border-red-700/50" },
-};
-
-const CONFIDENCE_LABEL: Record<string, string> = {
-  HIGH: "High confidence",
-  MEDIUM: "Medium confidence",
-  LOW: "Low — verify manually",
+const STATUS_META = {
+  COMPLIANT: { label: "Compliant", dot: "bg-green-500" },
+  PARTIAL:   { label: "Partial",   dot: "bg-amber-500" },
+  GAP:       { label: "Gap",       dot: "bg-red-500" },
 };
 
 export default function Home() {
+  const [dark, setDark] = useState(false);
   const [selectedCats, setSelectedCats] = useState<Set<CategoryId>>(new Set());
   const [file, setFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<GapReport | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"all" | "gaps" | "partial" | "compliant">("all");
+  const [activeTab, setActiveTab] = useState<"all" | "gaps" | "partial" | "compliant">("gaps");
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const isDark = document.documentElement.classList.contains("dark");
+    setDark(isDark);
+  }, []);
+
+  function toggleTheme() {
+    const next = !dark;
+    setDark(next);
+    document.documentElement.classList.toggle("dark", next);
+    localStorage.setItem("theme", next ? "dark" : "light");
+  }
 
   function toggleCat(id: CategoryId) {
     setSelectedCats((prev) => {
@@ -82,14 +81,10 @@ export default function Home() {
     });
   }
 
-  // Derive selected guideline IDs from selected categories
-  function getSelectedGuidelineIds(): string[] {
-    return GUIDELINES
-      .filter((g) => g.ingested && selectedCats.has(g.category as CategoryId))
-      .map((g) => g.id);
+  function getSelectedGuidelineIds() {
+    return GUIDELINES.filter((g) => g.ingested && selectedCats.has(g.category as CategoryId)).map((g) => g.id);
   }
 
-  // Count ingested guidelines per category
   function ingestedCount(catId: string) {
     return GUIDELINES.filter((g) => g.category === catId && g.ingested).length;
   }
@@ -99,27 +94,24 @@ export default function Home() {
     setDragOver(false);
     const f = e.dataTransfer.files[0];
     if (f?.name.endsWith(".docx")) setFile(f);
+    else setError("Please upload a .docx file");
   }
 
   async function handleAnalyse() {
-    if (!file || selectedCats.size === 0) return;
-    const guidelineIds = getSelectedGuidelineIds();
-    if (guidelineIds.length === 0) return;
-
+    const ids = getSelectedGuidelineIds();
+    if (!file || !ids.length) return;
     setLoading(true);
     setError(null);
     setReport(null);
-
     try {
       const form = new FormData();
       form.append("file", file);
-      form.append("guidelineIds", JSON.stringify(guidelineIds));
-
+      form.append("guidelineIds", JSON.stringify(ids));
       const res = await fetch("/api/analyse", { method: "POST", body: form });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Analysis failed");
       setReport(data.report);
-      setActiveTab("all");
+      setActiveTab("gaps");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unknown error");
     } finally {
@@ -128,260 +120,297 @@ export default function Home() {
   }
 
   const tabFindings: Record<string, GapFinding[]> = report
-    ? {
-        all: report.allFindings,
-        gaps: report.criticalGaps,
-        partial: report.minorGaps,
-        compliant: report.compliantAreas,
-      }
+    ? { all: report.allFindings, gaps: report.criticalGaps, partial: report.minorGaps, compliant: report.compliantAreas }
     : { all: [], gaps: [], partial: [], compliant: [] };
 
   const canRun = !!file && selectedCats.size > 0 && getSelectedGuidelineIds().length > 0;
 
   return (
-    <div className="min-h-screen bg-[#0a0c0f] text-slate-200" style={{ fontFamily: "'IBM Plex Mono', 'Courier New', monospace" }}>
+    <div style={{ minHeight: "100vh", background: "var(--bg)", color: "var(--text-primary)" }}>
+
       {/* Header */}
-      <header className="border-b border-slate-800/60 bg-[#0a0c0f]/80 sticky top-0 z-10 backdrop-blur">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+      <header style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-card)", boxShadow: "var(--shadow-sm)" }}
+        className="sticky top-0 z-20">
+        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded border border-slate-600 bg-slate-800 flex items-center justify-center">
-              <span className="text-xs font-bold text-slate-300">GX</span>
+            <div style={{ background: "var(--accent)", borderRadius: 8 }} className="w-8 h-8 flex items-center justify-center">
+              <span className="text-white text-xs font-bold">GX</span>
             </div>
             <div>
-              <h1 className="text-sm font-bold tracking-widest text-slate-100 uppercase">Compliance Gap Analyser</h1>
-              <p className="text-xs text-slate-500 tracking-wider">KJR Labs — Pharma QA Tooling</p>
+              <div className="font-semibold text-sm" style={{ color: "var(--text-primary)" }}>Compliance Gap Analyser</div>
+              <div className="text-xs" style={{ color: "var(--text-muted)" }}>by KJR Labs</div>
             </div>
           </div>
-          <div className="text-xs text-slate-600 tabular-nums">
-            {GUIDELINES.filter((g) => g.ingested).length} guidelines indexed
-          </div>
+          <button onClick={toggleTheme}
+            style={{ border: "1px solid var(--border)", background: "var(--bg-subtle)", borderRadius: 8, padding: "6px 12px", cursor: "pointer", color: "var(--text-secondary)", fontSize: 13 }}
+            className="flex items-center gap-2 transition-all hover:opacity-80">
+            {dark ? "☀ Light" : "◑ Dark"}
+          </button>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-6">
+      <main className="max-w-6xl mx-auto px-6 py-8">
 
-          {/* LEFT PANEL */}
+        {/* Hero */}
+        <div className="mb-8 text-center">
+          <h1 className="text-3xl font-semibold mb-2" style={{ color: "var(--text-primary)", letterSpacing: "-0.02em" }}>
+            Regulatory Compliance Gap Analysis
+          </h1>
+          <p className="text-base" style={{ color: "var(--text-secondary)", maxWidth: 520, margin: "0 auto" }}>
+            Upload your SOP or policy document and check it against international pharmaceutical regulatory frameworks instantly.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-[420px_1fr] gap-6 items-start">
+
+          {/* LEFT */}
           <div className="space-y-4">
 
-            {/* File Upload */}
-            <div className="rounded border border-slate-700/50 bg-slate-900/40">
-              <div className="px-4 py-3 border-b border-slate-700/50">
-                <h2 className="text-xs font-bold tracking-widest uppercase text-slate-400">01 — Document</h2>
+            {/* Upload */}
+            <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, boxShadow: "var(--shadow-sm)" }}>
+              <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)" }}>
+                <div className="font-medium text-sm" style={{ color: "var(--text-primary)" }}>Upload Document</div>
+                <div className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>Supported format: .docx</div>
               </div>
-              <div className="p-4">
+              <div style={{ padding: 16 }}>
                 <div
-                  className={`border-2 border-dashed rounded p-6 text-center cursor-pointer transition-all ${
-                    dragOver ? "border-blue-500 bg-blue-950/20"
-                    : file ? "border-emerald-600/50 bg-emerald-950/10"
-                    : "border-slate-700 hover:border-slate-500"
-                  }`}
                   onClick={() => fileRef.current?.click()}
                   onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
                   onDragLeave={() => setDragOver(false)}
                   onDrop={handleDrop}
-                >
+                  style={{
+                    border: `2px dashed ${dragOver ? "var(--accent)" : file ? "var(--success)" : "var(--border-strong)"}`,
+                    borderRadius: 10,
+                    padding: "28px 20px",
+                    textAlign: "center",
+                    cursor: "pointer",
+                    background: dragOver ? "var(--accent-subtle)" : file ? "var(--success-bg)" : "var(--bg-subtle)",
+                    transition: "all 0.15s",
+                  }}>
                   <input ref={fileRef} type="file" accept=".docx" className="hidden"
-                    onChange={(e) => e.target.files?.[0] && setFile(e.target.files[0])} />
+                    onChange={(e) => { if (e.target.files?.[0]) { setFile(e.target.files[0]); setError(null); } }} />
                   {file ? (
                     <div>
-                      <div className="text-emerald-400 text-xs font-bold tracking-wider mb-1">LOADED</div>
-                      <div className="text-slate-200 text-sm truncate">{file.name}</div>
-                      <div className="text-slate-500 text-xs mt-1">{(file.size / 1024).toFixed(1)} KB</div>
+                      <div style={{ fontSize: 24, marginBottom: 6 }}>✓</div>
+                      <div className="font-medium text-sm" style={{ color: "var(--success)" }}>{file.name}</div>
+                      <div className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{(file.size / 1024).toFixed(0)} KB —{" "}
+                        <span style={{ color: "var(--accent)", cursor: "pointer" }} onClick={(e) => { e.stopPropagation(); setFile(null); }}>
+                          Remove
+                        </span>
+                      </div>
                     </div>
                   ) : (
                     <div>
-                      <div className="text-slate-500 text-xs tracking-wider mb-1">Drop .docx file here</div>
-                      <div className="text-slate-600 text-xs">or click to browse</div>
+                      <div style={{ fontSize: 28, marginBottom: 8, color: "var(--text-muted)" }}>↑</div>
+                      <div className="text-sm font-medium" style={{ color: "var(--text-secondary)" }}>Drop your document here</div>
+                      <div className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>or click to browse files</div>
                     </div>
                   )}
                 </div>
               </div>
             </div>
 
-            {/* Category Selection */}
-            <div className="rounded border border-slate-700/50 bg-slate-900/40">
-              <div className="px-4 py-3 border-b border-slate-700/50 flex items-center justify-between">
-                <h2 className="text-xs font-bold tracking-widest uppercase text-slate-400">02 — Regulatory Framework</h2>
-                <span className="text-xs text-slate-500">{selectedCats.size} selected</span>
+            {/* Framework */}
+            <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, boxShadow: "var(--shadow-sm)" }}>
+              <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)" }}>
+                <div className="font-medium text-sm" style={{ color: "var(--text-primary)" }}>Regulatory Framework</div>
+                <div className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>Select one or more to check against</div>
               </div>
-              <div className="p-3 space-y-2">
+              <div style={{ padding: 12 }} className="space-y-2">
                 {CATEGORIES.map((cat) => {
                   const count = ingestedCount(cat.id);
                   const selected = selectedCats.has(cat.id);
-                  const colors = COLOR_MAP[cat.color];
-                  const hasGuidelines = count > 0;
-
+                  const available = count > 0;
                   return (
-                    <button
-                      key={cat.id}
-                      onClick={() => hasGuidelines && toggleCat(cat.id)}
-                      disabled={!hasGuidelines}
-                      className={`w-full text-left p-3 rounded border transition-all ${
-                        !hasGuidelines ? "opacity-30 cursor-not-allowed border-slate-800"
-                        : selected ? colors.border
-                        : `border-slate-700/50 ${colors.card}`
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="flex items-center gap-2">
-                          {/* Checkbox */}
-                          <div className={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center transition-all ${
-                            selected ? colors.check : "border-slate-600 bg-transparent"
-                          }`}>
-                            {selected && (
-                              <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth="2">
-                                <path strokeLinecap="round" d="M2 6l3 3 5-5"/>
-                              </svg>
-                            )}
+                    <button key={cat.id} onClick={() => available && toggleCat(cat.id)} disabled={!available}
+                      style={{
+                        width: "100%", textAlign: "left", padding: "12px 14px", borderRadius: 10, cursor: available ? "pointer" : "not-allowed",
+                        border: `1.5px solid ${selected ? "var(--accent)" : "var(--border)"}`,
+                        background: selected ? "var(--accent-subtle)" : available ? "var(--bg-subtle)" : "var(--bg-subtle)",
+                        opacity: available ? 1 : 0.4, transition: "all 0.15s",
+                      }}>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div style={{
+                            width: 18, height: 18, borderRadius: 5, border: `2px solid ${selected ? "var(--accent)" : "var(--border-strong)"}`,
+                            background: selected ? "var(--accent)" : "transparent", flexShrink: 0,
+                            display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s",
+                          }}>
+                            {selected && <span style={{ color: "white", fontSize: 11, fontWeight: 700 }}>✓</span>}
                           </div>
-                          <span className="text-sm font-bold text-slate-100 tracking-wide">{cat.label}</span>
+                          <div>
+                            <div className="font-semibold text-sm" style={{ color: selected ? "var(--accent)" : "var(--text-primary)" }}>
+                              {cat.fullName}
+                            </div>
+                          </div>
                         </div>
-                        <span className={`text-xs px-2 py-0.5 rounded border ${colors.badge} tabular-nums`}>
-                          {count} guidelines
-                        </span>
+                        {available && (
+                          <span style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap", marginLeft: 8 }}>
+                            {count} guidelines
+                          </span>
+                        )}
                       </div>
-                      <div className="text-xs text-slate-500 ml-6 leading-relaxed">{cat.description}</div>
+                      <div className="text-xs mt-1.5" style={{ color: "var(--text-muted)", paddingLeft: 30, lineHeight: 1.5 }}>
+                        {cat.description}
+                      </div>
                     </button>
                   );
                 })}
               </div>
-
-              {/* Selection summary */}
-              {selectedCats.size > 0 && (
-                <div className="px-3 pb-3">
-                  <div className="rounded bg-slate-800/60 border border-slate-700/50 px-3 py-2 text-xs text-slate-400">
-                    {getSelectedGuidelineIds().length} guidelines will be searched across{" "}
-                    {[...selectedCats].map(id => CATEGORIES.find(c => c.id === id)?.label).join(" + ")}
-                  </div>
-                </div>
-              )}
             </div>
 
-            {/* Run Button */}
-            <button
-              onClick={handleAnalyse}
-              disabled={!canRun || loading}
-              className={`w-full py-3 px-4 rounded text-sm font-bold tracking-widest uppercase transition-all ${
-                !canRun || loading
-                  ? "bg-slate-800 text-slate-600 cursor-not-allowed border border-slate-700"
-                  : "bg-blue-600 hover:bg-blue-500 text-white border border-blue-500"
-              }`}
-            >
+            {/* CTA */}
+            <button onClick={handleAnalyse} disabled={!canRun || loading}
+              style={{
+                width: "100%", padding: "14px", borderRadius: 10, border: "none", cursor: canRun && !loading ? "pointer" : "not-allowed",
+                background: canRun && !loading ? "var(--accent)" : "var(--bg-subtle)",
+                color: canRun && !loading ? "white" : "var(--text-muted)",
+                fontFamily: "inherit", fontWeight: 600, fontSize: 15, transition: "all 0.15s",
+                boxShadow: canRun && !loading ? "0 2px 8px rgba(29,78,216,0.3)" : "none",
+              }}>
               {loading ? (
-                <span className="flex items-center justify-center gap-2">
-                  <span className="animate-spin w-3 h-3 border border-white/30 border-t-white rounded-full inline-block" />
-                  Analysing...
+                <span style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
+                  <span style={{ width: 16, height: 16, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "white", borderRadius: "50%", display: "inline-block", animation: "spin 0.8s linear infinite" }} />
+                  Analysing document...
                 </span>
               ) : "Run Gap Analysis"}
             </button>
 
             {error && (
-              <div className="rounded border border-red-800/50 bg-red-950/30 p-3 text-xs text-red-300">
+              <div style={{ padding: "12px 14px", borderRadius: 10, background: "var(--danger-bg)", border: "1px solid var(--danger-border)", color: "var(--danger)", fontSize: 13 }}>
                 {error}
               </div>
             )}
           </div>
 
-          {/* RIGHT PANEL */}
+          {/* RIGHT */}
           <div>
             {!report && !loading && (
-              <div className="h-full min-h-[400px] flex items-center justify-center rounded border border-slate-800/50 bg-slate-900/20">
-                <div className="text-center space-y-2">
-                  <div className="text-slate-700 text-4xl font-mono">—</div>
-                  <div className="text-slate-600 text-xs tracking-widest uppercase">Upload a document and select a regulatory framework</div>
+              <div style={{ minHeight: 480, background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12, boxShadow: "var(--shadow-sm)" }}>
+                <div style={{ fontSize: 40, color: "var(--border-strong)" }}>◎</div>
+                <div className="font-medium" style={{ color: "var(--text-muted)" }}>No analysis yet</div>
+                <div className="text-sm" style={{ color: "var(--text-muted)", maxWidth: 280, textAlign: "center" }}>
+                  Upload a document and select a regulatory framework to get started
                 </div>
               </div>
             )}
 
             {loading && (
-              <div className="h-full min-h-[400px] flex items-center justify-center rounded border border-slate-800/50 bg-slate-900/20">
-                <div className="text-center">
-                  <div className="w-8 h-8 border border-blue-500/30 border-t-blue-400 rounded-full animate-spin mx-auto mb-4" />
-                  <div className="text-slate-400 text-xs tracking-widest uppercase">Running analysis</div>
-                  <div className="text-slate-600 text-xs mt-1">This may take 30–60 seconds</div>
-                </div>
+              <div style={{ minHeight: 480, background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
+                <div style={{ width: 36, height: 36, border: "3px solid var(--border)", borderTopColor: "var(--accent)", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                <div className="font-medium" style={{ color: "var(--text-secondary)" }}>Running analysis</div>
+                <div className="text-sm" style={{ color: "var(--text-muted)" }}>This typically takes 30–60 seconds</div>
               </div>
             )}
 
             {report && (
               <div className="space-y-4">
-                {/* Summary */}
-                <div className="rounded border border-slate-700/50 bg-slate-900/40 p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-4">
+                {/* Score cards */}
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    { label: "Gaps Found", value: report.criticalGaps.length, color: "var(--danger)", bg: "var(--danger-bg)", border: "var(--danger-border)" },
+                    { label: "Partial", value: report.minorGaps.length, color: "var(--warning)", bg: "var(--warning-bg)", border: "var(--warning-border)" },
+                    { label: "Compliant", value: report.compliantAreas.length, color: "var(--success)", bg: "var(--success-bg)", border: "var(--success-border)" },
+                  ].map((s) => (
+                    <div key={s.label} style={{ background: s.bg, border: `1px solid ${s.border}`, borderRadius: 12, padding: "16px 20px", textAlign: "center" }}>
+                      <div style={{ fontSize: 32, fontWeight: 700, color: s.color, lineHeight: 1 }}>{s.value}</div>
+                      <div className="text-xs mt-1 font-medium" style={{ color: s.color }}>{s.label}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Meta */}
+                <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: "14px 18px", boxShadow: "var(--shadow-sm)" }}>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <div className="text-xs text-slate-500 tracking-widest uppercase mb-1">Overall Score</div>
-                      <div className="text-2xl font-bold text-slate-100 tabular-nums">{report.overallScore}</div>
-                      <div className="text-xs text-slate-500 mt-1 truncate max-w-xs">{report.documentName}</div>
+                      <div className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>Document</div>
+                      <div className="text-sm font-medium mt-0.5" style={{ color: "var(--text-primary)" }}>{report.documentName}</div>
                     </div>
-                    <div className="flex gap-4 text-center">
-                      <div>
-                        <div className="text-xl font-bold text-red-400 tabular-nums">{report.criticalGaps.length}</div>
-                        <div className="text-xs text-slate-500 uppercase tracking-wider">Gaps</div>
-                      </div>
-                      <div>
-                        <div className="text-xl font-bold text-amber-400 tabular-nums">{report.minorGaps.length}</div>
-                        <div className="text-xs text-slate-500 uppercase tracking-wider">Partial</div>
-                      </div>
-                      <div>
-                        <div className="text-xl font-bold text-emerald-400 tabular-nums">{report.compliantAreas.length}</div>
-                        <div className="text-xs text-slate-500 uppercase tracking-wider">Compliant</div>
-                      </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {report.guidelines.slice(0, 4).map((g) => (
+                        <span key={g} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 20, background: "var(--accent-subtle)", color: "var(--accent)", border: "1px solid var(--accent)", opacity: 0.8 }}>
+                          {g}
+                        </span>
+                      ))}
+                      {report.guidelines.length > 4 && (
+                        <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 20, background: "var(--bg-subtle)", color: "var(--text-muted)" }}>
+                          +{report.guidelines.length - 4} more
+                        </span>
+                      )}
                     </div>
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-1">
-                    {report.guidelines.map((g) => (
-                      <span key={g} className="px-2 py-0.5 text-xs rounded bg-slate-800 text-slate-400 border border-slate-700">{g}</span>
-                    ))}
                   </div>
                 </div>
 
                 {/* Tabs */}
-                <div className="flex gap-1 border-b border-slate-800">
-                  {(["all", "gaps", "partial", "compliant"] as const).map((tab) => (
-                    <button key={tab} onClick={() => setActiveTab(tab)}
-                      className={`px-3 py-2 text-xs tracking-widest uppercase font-medium transition-all border-b-2 -mb-px ${
-                        activeTab === tab ? "text-slate-100 border-blue-500" : "text-slate-500 border-transparent hover:text-slate-300"
-                      }`}>
-                      {tab === "all" ? `All (${tabFindings.all.length})`
-                        : tab === "gaps" ? `Gaps (${tabFindings.gaps.length})`
-                        : tab === "partial" ? `Partial (${tabFindings.partial.length})`
-                        : `Compliant (${tabFindings.compliant.length})`}
-                    </button>
-                  ))}
-                </div>
+                <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden", boxShadow: "var(--shadow-sm)" }}>
+                  <div style={{ display: "flex", borderBottom: "1px solid var(--border)" }}>
+                    {([
+                      { key: "gaps",      label: "Gaps",      count: tabFindings.gaps.length },
+                      { key: "partial",   label: "Partial",   count: tabFindings.partial.length },
+                      { key: "compliant", label: "Compliant", count: tabFindings.compliant.length },
+                      { key: "all",       label: "All",       count: tabFindings.all.length },
+                    ] as const).map((tab) => (
+                      <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+                        style={{
+                          flex: 1, padding: "12px 8px", border: "none", cursor: "pointer", fontFamily: "inherit",
+                          fontSize: 13, fontWeight: activeTab === tab.key ? 600 : 400, transition: "all 0.15s",
+                          background: activeTab === tab.key ? "var(--bg-subtle)" : "transparent",
+                          color: activeTab === tab.key ? "var(--text-primary)" : "var(--text-muted)",
+                          borderBottom: activeTab === tab.key ? "2px solid var(--accent)" : "2px solid transparent",
+                        }}>
+                        {tab.label}
+                        <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.7 }}>({tab.count})</span>
+                      </button>
+                    ))}
+                  </div>
 
-                {/* Findings */}
-                <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
-                  {tabFindings[activeTab].map((f, i) => {
-                    const cfg = STATUS_CONFIG[f.status];
-                    return (
-                      <div key={i} className={`rounded border ${cfg.border} p-3`}>
-                        <div className="flex items-start justify-between gap-2 mb-2 flex-wrap">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className={`text-xs px-2 py-0.5 rounded font-bold tracking-wider ${cfg.badge}`}>{f.status}</span>
-                            <span className="text-xs text-slate-400 font-medium">{f.guidelineReference}</span>
-                          </div>
-                          <span className={`text-xs whitespace-nowrap ${f.confidence === "LOW" ? "text-amber-600" : "text-slate-500"}`}>
-                            {CONFIDENCE_LABEL[f.confidence]}
-                          </span>
-                        </div>
-                        <div className="text-xs text-slate-500 uppercase tracking-wider mb-1 font-bold">{f.section}</div>
-                        <div className="text-xs text-slate-300 mb-2 leading-relaxed">
-                          <span className="text-slate-500 uppercase tracking-wider font-bold">Requirement: </span>{f.requirement}
-                        </div>
-                        <div className="text-xs text-slate-400 leading-relaxed border-t border-slate-700/50 pt-2">
-                          <span className="text-slate-500 uppercase tracking-wider font-bold">Finding: </span>{f.finding}
-                        </div>
+                  {/* Findings list */}
+                  <div style={{ maxHeight: 520, overflowY: "auto", padding: 12 }} className="space-y-2">
+                    {tabFindings[activeTab].length === 0 ? (
+                      <div style={{ padding: "40px 20px", textAlign: "center", color: "var(--text-muted)", fontSize: 14 }}>
+                        No {activeTab} findings
                       </div>
-                    );
-                  })}
-                  {tabFindings[activeTab].length === 0 && (
-                    <div className="text-center py-10 text-slate-600 text-xs tracking-wider uppercase">No {activeTab} findings</div>
-                  )}
+                    ) : tabFindings[activeTab].map((f, i) => {
+                      const meta = STATUS_META[f.status];
+                      const borderColor = f.status === "COMPLIANT" ? "var(--success-border)" : f.status === "PARTIAL" ? "var(--warning-border)" : "var(--danger-border)";
+                      const bgColor = f.status === "COMPLIANT" ? "var(--success-bg)" : f.status === "PARTIAL" ? "var(--warning-bg)" : "var(--danger-bg)";
+                      const textColor = f.status === "COMPLIANT" ? "var(--success)" : f.status === "PARTIAL" ? "var(--warning)" : "var(--danger)";
+                      return (
+                        <div key={i} style={{ border: `1px solid ${borderColor}`, background: bgColor, borderRadius: 10, padding: "14px 16px" }}>
+                          <div className="flex items-start justify-between gap-2 flex-wrap mb-2">
+                            <div className="flex items-center gap-2">
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, color: textColor, padding: "3px 8px", borderRadius: 20, border: `1px solid ${borderColor}`, background: "transparent" }}>
+                                <span style={{ width: 6, height: 6, borderRadius: "50%", background: textColor, display: "inline-block" }} />
+                                {meta.label}
+                              </span>
+                              <span className="text-xs font-medium mono" style={{ color: "var(--text-secondary)" }}>{f.guidelineReference}</span>
+                            </div>
+                            {f.confidence === "LOW" && (
+                              <span style={{ fontSize: 11, color: "var(--warning)", background: "var(--warning-bg)", padding: "2px 8px", borderRadius: 20, border: "1px solid var(--warning-border)" }}>
+                                Verify manually
+                              </span>
+                            )}
+                          </div>
+                          {f.section && (
+                            <div className="text-xs font-semibold mb-2" style={{ color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                              {f.section}
+                            </div>
+                          )}
+                          <div className="text-sm mb-2" style={{ color: "var(--text-primary)", lineHeight: 1.6 }}>
+                            <span className="font-semibold" style={{ color: "var(--text-secondary)" }}>Requirement: </span>
+                            {f.requirement}
+                          </div>
+                          <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.6, paddingTop: 10, borderTop: `1px solid ${borderColor}` }}>
+                            <span className="font-semibold" style={{ color: "var(--text-secondary)" }}>Finding: </span>
+                            {f.finding}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
 
-                <div className="text-xs text-slate-600 text-right">
+                <div className="text-xs text-right" style={{ color: "var(--text-muted)" }}>
                   Analysed {new Date(report.analysedAt).toLocaleString()}
                 </div>
               </div>
@@ -389,6 +418,8 @@ export default function Home() {
           </div>
         </div>
       </main>
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }

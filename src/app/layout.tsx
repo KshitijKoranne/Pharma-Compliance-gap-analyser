@@ -1,26 +1,22 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
-
-const ibmPlexMono = IBM_Plex_Mono({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-  variable: "--font-mono",
-});
 
 export const metadata: Metadata = {
   title: "Compliance Gap Analyser — KJR Labs",
-  description: "AI-powered pharmaceutical regulatory compliance gap analysis tool",
+  description: "AI-powered pharmaceutical regulatory compliance gap analysis",
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body className={`${ibmPlexMono.variable} antialiased`}>{children}</body>
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <script dangerouslySetInnerHTML={{
+          __html: `(function(){try{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&window.matchMedia('(prefers-color-scheme:dark)').matches)){document.documentElement.classList.add('dark')}}catch(e){}})()`,
+        }} />
+      </head>
+      <body>{children}</body>
     </html>
   );
 }
