@@ -194,25 +194,24 @@ export async function runGapAnalysis(
   const nvidiaKey = process.env.NVIDIA_API_KEY!;
   const openRouterKey = process.env.OPENROUTER_API_KEY;
 
+  const hasOpenRouter = openRouterKey && openRouterKey !== "placeholder";
+
   // Pass 1: Summarise document
   let summary: DocumentSummary;
   try {
     summary = await summariseDocument(sopText, nvidiaKey, false);
-  } catch {
-    try {
-      summary = await summariseDocument(sopText, openRouterKey!, true);
-    } catch {
-      // Fallback minimal summary if both fail
-      summary = {
-        title: documentName,
-        documentType: "SOP",
-        purpose: "Not determined",
-        scope: "Not determined",
-        covers: [],
-        excludes: [],
-        keyProcesses: [],
-        riskLevel: "HIGH",
-      };
+  } catch (err1) {
+    console.warn("NVIDIA summariser failed:", err1);
+    if (hasOpenRouter) {
+      try {
+        summary = await summariseDocument(sopText, openRouterKey!, true);
+      } catch (err2) {
+        console.warn("OpenRouter summariser also failed:", err2);
+        summary = { title: documentName, documentType: "SOP", purpose: "Not determined", scope: "Not determined", covers: [], excludes: [], keyProcesses: [], riskLevel: "HIGH" };
+      }
+    } else {
+      // No fallback available — use minimal summary and proceed
+      summary = { title: documentName, documentType: "SOP", purpose: "Not determined", scope: "Not determined", covers: [], excludes: [], keyProcesses: [], riskLevel: "HIGH" };
     }
   }
 
@@ -221,7 +220,8 @@ export async function runGapAnalysis(
   try {
     findings = await runAnalysis(sopText, summary, guidelineChunks, nvidiaKey, false);
   } catch (err) {
-    console.warn("NVIDIA NIM failed on analysis, falling back:", err);
+    console.warn("NVIDIA NIM failed on analysis:", err);
+    if (!hasOpenRouter) throw err; // Surface the real error
     findings = await runAnalysis(sopText, summary, guidelineChunks, openRouterKey!, true);
   }
 
