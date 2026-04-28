@@ -1,4 +1,3 @@
-import type { SearchResult } from "./vector";
 import type { Guideline } from "./guidelines-registry";
 
 /**
@@ -122,6 +121,14 @@ export interface DocumentSummary {
   gmpActivities: string[];
 }
 
+export interface Requirement {
+  id: string;
+  guidelineReference: string;
+  section: string;
+  requirement: string;
+  whyRelevant: string;
+}
+
 export interface GapReport {
   overallScore: string;
   summary: DocumentSummary;
@@ -156,7 +163,6 @@ Return ONLY valid JSON, no markdown, no preamble, no trailing text:
 }`;
 
 export async function summariseDocument(sopText: string): Promise<DocumentSummary> {
-  // Send beginning + end of document to capture purpose/scope AND references/retention
   const beginChars = 5000;
   const endChars = 3000;
   let docSlice: string;
@@ -217,7 +223,6 @@ export async function filterGuidelines(
   availableGuidelines: Guideline[],
   userSelectedIds: string[]
 ): Promise<string[]> {
-  // Only consider guidelines the user actually selected (via category checkboxes)
   const candidates = availableGuidelines.filter((g) => userSelectedIds.includes(g.id));
 
   const registryText = candidates
@@ -254,16 +259,12 @@ Return ONLY the IDs of guidelines that are genuinely relevant to audit this docu
   const citedRefs = summary.regulatoryReferences.map((r) => r.toLowerCase());
   for (const g of candidates) {
     if (filteredIds.includes(g.id)) continue;
-
     const shortLower = g.shortName.toLowerCase();
-    // Check if any cited reference matches this guideline
-    // e.g. "ICH Q10" matches shortName "ICH Q10"
     if (
       citedRefs.some(
         (ref) =>
           shortLower.includes(ref) ||
           ref.includes(shortLower) ||
-          // Handle partial matches like "ich q9" matching "ICH Q9(R1)"
           shortLower.replace(/[^a-z0-9]/g, "").includes(ref.replace(/[^a-z0-9]/g, ""))
       )
     ) {
@@ -271,11 +272,9 @@ Return ONLY the IDs of guidelines that are genuinely relevant to audit this docu
     }
   }
 
-  // Validate: only return IDs that exist in user's selection
   const validIds = new Set(candidates.map((g) => g.id));
   filteredIds = filteredIds.filter((id) => validIds.has(id));
 
-  // If filter is too aggressive (0 results), fall back to user selection
   if (filteredIds.length === 0) {
     console.warn("Guideline filter returned 0 results — falling back to user selection");
     return userSelectedIds;
@@ -288,49 +287,40 @@ Return ONLY the IDs of guidelines that are genuinely relevant to audit this docu
   return filteredIds;
 }
 
-// ── Search Query Generation ──────────────────────────────────────────────────
+// ── Pass 2: Generate applicable requirements (LLM-driven) ───────────────────
 
-export function generateSearchQueries(summary: DocumentSummary): string[] {
-  const queries: string[] = [];
+const REQUIREMENT_GEN_PROMPT = `You are a pharmaceutical regulatory compliance expert with deep knowledge of ICH, EU GMP, FDA, and WHO guidelines.
 
-  // Key processes — most targeted
-  for (const proc of summary.keyProcesses.slice(0, 4)) {
-    queries.push(proc);
-  }
+Given a document summary and a list of applicable guidelines, identify the SPECIFIC requirements from those guidelines that this document SHOULD address.
 
-  // GMP activities with regulatory context
-  for (const activity of summary.gmpActivities.slice(0, 3)) {
-    queries.push(`${activity} requirements GMP pharmaceutical`);
-  }
+CRITICAL RULES:
+1. Only list requirements that are DIRECTLY relevant to the document's purpose and scope.
+2. For each guideline, focus on the SECTIONS that relate to the document's GMP activities — not the entire guideline.
+   - For a Change Control SOP audited against ICH Q7: focus on Section 12 (Change Control), Section 2.1 (Quality Management principles), Section 6 (Documentation) — NOT Section 4 (Buildings), Section 5 (Process Equipment), Section 8 (Production).
+   - For a Stability Protocol audited against ICH Q1A: focus on storage conditions, testing intervals, data evaluation — NOT manufacturing controls.
+3. Include exact section numbers from the guideline.
+4. Aim for 15–25 requirements that are genuinely applicable. Quality over quantity.
+5. Each requirement should be specific and auditable — not vague.
 
-  // Specific topics covered
-  for (const topic of summary.covers.slice(0, 3)) {
-    queries.push(topic);
-  }
+Return ONLY valid JSON, no markdown, no preamble:
+{
+  "requirements": [
+    {
+      "id": "REQ-01",
+      "guidelineReference": "ICH Q10, Section 3.2.4",
+      "section": "3.2.4 Change Management",
+      "requirement": "A change management system should be established to evaluate proposed changes that might affect product quality, regulatory compliance, or patient safety.",
+      "whyRelevant": "Core change control requirement — directly addresses this SOP's purpose"
+    }
+  ]
+}`;
 
-  // Purpose-based query
-  if (summary.purpose && summary.purpose !== "Not determined") {
-    queries.push(summary.purpose);
-  }
-
-  // Deduplicate and cap
-  const seen = new Set<string>();
-  return queries
-    .filter((q) => {
-      const key = q.toLowerCase().trim();
-      if (seen.has(key) || key.length < 10) return false;
-      seen.add(key);
-      return true;
-    })
-    .slice(0, 8);
-}
-
-// ── Pass 2: Gap analysis with document context ────────────────────────────────
-
-function buildAnalysisPrompt(summary: DocumentSummary): string {
-  return `You are a pharmaceutical GMP regulatory auditor conducting a thorough gap analysis of a ${summary.documentType}.
-
-DOCUMENT CONTEXT:
+export async function generateRequirements(
+  summary: DocumentSummary,
+  guidelineNames: string[]
+): Promise<Requirement[]> {
+  const userMessage = `DOCUMENT SUMMARY:
+- Title: ${summary.title}
 - Type: ${summary.documentType}
 - Purpose: ${summary.purpose}
 - Scope: ${summary.scope}
@@ -338,43 +328,69 @@ DOCUMENT CONTEXT:
 - Excludes: ${summary.excludes.length ? summary.excludes.join("; ") : "nothing stated"}
 - Key processes: ${summary.keyProcesses.join("; ")}
 - GMP Activities: ${summary.gmpActivities.join("; ")}
-- Risk Level: ${summary.riskLevel}
+- Product types: ${summary.applicableProductTypes.join("; ")}
 
-INSTRUCTIONS:
-You MUST produce exactly one finding for EVERY [REQ-XX] block. Do not skip any. Each requirement has already been pre-filtered for relevance — your job is to evaluate compliance, not relevance.
+APPLICABLE GUIDELINES TO DRAW REQUIREMENTS FROM:
+${guidelineNames.join(", ")}
+
+List 15–25 specific, auditable requirements from these guidelines that this ${summary.documentType} should address. Focus on the sections of each guideline that relate to ${summary.gmpActivities.slice(0, 5).join(", ")}.`;
+
+  const content = await callLLMWithFallback(
+    REQUIREMENT_GEN_PROMPT,
+    userMessage,
+    4096
+  );
+
+  const parsed = JSON.parse(extractJSON(content));
+  const reqs: Requirement[] = parsed.requirements || [];
+
+  // Assign IDs if missing
+  return reqs.map((r, i) => ({
+    ...r,
+    id: r.id || `REQ-${String(i + 1).padStart(2, "0")}`,
+  }));
+}
+
+// ── Pass 3: Audit SOP against generated requirements ─────────────────────────
+
+function buildAuditPrompt(summary: DocumentSummary): string {
+  return `You are a pharmaceutical GMP regulatory auditor. You will receive:
+1. The full text of a ${summary.documentType}
+2. A list of specific regulatory requirements this document should address
+
+Your job: evaluate whether the document satisfies EACH requirement.
+
+DOCUMENT CONTEXT:
+- Type: ${summary.documentType}
+- Purpose: ${summary.purpose}
+- Scope: ${summary.scope}
+- Covers: ${summary.covers.join("; ")}
+- Excludes: ${summary.excludes.length ? summary.excludes.join("; ") : "nothing stated"}
 
 CLASSIFICATION RULES (apply strictly):
 
-GAP — Use when:
-- The requirement is completely absent from the document
-- The document explicitly excludes or contradicts a required element
-- A specific sub-requirement (e.g. "use FMEA or similar risk tool") is not mentioned at all
-- The document mentions a topic generically but does not address the SPECIFIC requirement
+GAP — The requirement is:
+- Completely absent from the document
+- The document explicitly excludes or contradicts it
+- The document mentions the topic generically but does NOT address the SPECIFIC regulatory requirement
+- Example: SOP mentions "risk evaluation" but does NOT reference specific risk tools (FMEA, fault tree, risk matrix) → GAP for an ICH Q9 risk tool requirement
 
-PARTIAL — Use when:
-- The requirement is genuinely addressed but specific mandatory sub-elements are missing
-- The document covers the general topic but lacks the detail or specificity required
-- Example: SOP has "impact assessment" but does not mention specific risk assessment TOOLS (FMEA, risk matrix) as required by ICH Q9
+PARTIAL — The requirement is:
+- Genuinely touched upon but specific mandatory sub-elements are missing
+- The general topic is covered but not with the specificity the guideline demands
+- Example: SOP has "impact assessment" section but does not explicitly consider patient safety → PARTIAL
 
-COMPLIANT — Use ONLY when:
-- The requirement is EXPLICITLY and SPECIFICALLY addressed with sufficient detail
-- You can point to a specific SOP section that satisfies the requirement
-- The document's content matches what the guideline requires — not just the topic area
+COMPLIANT — The requirement is:
+- EXPLICITLY and SPECIFICALLY addressed in the document
+- You can cite a specific section/paragraph that satisfies it
+- The content matches what the guideline actually requires, not just the topic area
 
-CRITICAL GAPS TO CHECK (mark GAP if absent, PARTIAL if only vaguely addressed):
-1. Use of specific risk assessment tools (FMEA, fault tree, risk matrix) per ICH Q9 — generic "risk evaluation" is NOT sufficient
-2. Patient safety explicitly stated as primary consideration in impact assessment
-3. Senior management / management review of change control system performance
-4. Post-implementation effectiveness check or review after change closure
-5. Emergency, urgent, or retrospective change provisions
-6. Re-validation or re-qualification requirements after major changes
-7. Change control scope covering outsourced/contracted activities — if document EXCLUDES these, that is a GAP per ICH Q7/Q10
-8. Record retention period aligned with ICH Q7 Section 6.1 (minimum 1 year after batch expiry for APIs, or as per local regulations)
-9. CAPA linkage — changes arising from deviations/OOS must link to CAPA system
-10. Periodic review or trending of change control data
+IMPORTANT:
+- Read the ENTIRE SOP text before classifying. Requirements may be addressed in unexpected sections.
+- "This SOP cross-references another SOP" counts as PARTIAL at best — the requirement should be addressed HERE or explicitly delegated with a specific cross-reference.
+- If the document EXCLUDES something that a guideline REQUIRES (e.g. excludes outsourced activities when ICH Q7/Q10 requires them in scope), that is a GAP.
 
-Always cite exact guideline section numbers (e.g., "ICH Q10, Section 3.2.3").
-Finding field: 1–2 precise sentences. For COMPLIANT — name the SOP section. For GAP/PARTIAL — state EXACTLY what is missing.
+Finding field: 1–2 precise sentences. COMPLIANT → cite the SOP section. GAP/PARTIAL → state EXACTLY what is missing or insufficient.
 
 Return ONLY valid JSON, no markdown, no preamble, no trailing text:
 {
@@ -382,36 +398,36 @@ Return ONLY valid JSON, no markdown, no preamble, no trailing text:
     {
       "section": "SOP section reference or 'Not addressed'",
       "status": "GAP" | "PARTIAL" | "COMPLIANT",
-      "requirement": "The specific requirement with guideline section number",
-      "finding": "1-2 sentence observation",
-      "guidelineReference": "e.g. ICH Q10, Section 3.2.3",
+      "requirement": "The requirement text as given",
+      "finding": "1-2 sentence precise observation",
+      "guidelineReference": "e.g. ICH Q10, Section 3.2.4",
       "confidence": "HIGH" | "MEDIUM" | "LOW"
     }
   ]
 }`;
 }
 
-export async function runAnalysis(
+export async function auditDocument(
   sopText: string,
   summary: DocumentSummary,
-  guidelineChunks: SearchResult[]
+  requirements: Requirement[]
 ): Promise<GapFinding[]> {
-  const systemPrompt = buildAnalysisPrompt(summary);
+  const systemPrompt = buildAuditPrompt(summary);
 
-  const chunksText = guidelineChunks
+  const reqsText = requirements
     .map(
-      (c, i) =>
-        `[REQ-${String(i + 1).padStart(2, "0")}] ${c.metadata.guidelineReference || c.metadata.source} — ${c.metadata.section}\n${c.metadata.text}`
+      (r) =>
+        `[${r.id}] ${r.guidelineReference} — ${r.section}\nRequirement: ${r.requirement}\nWhy relevant: ${r.whyRelevant}`
     )
     .join("\n\n---\n\n");
 
-  const userMessage = `Audit the SOP below against EVERY requirement block. Produce exactly one finding per [REQ-XX] block. Do not skip any — all requirements have been pre-filtered for relevance.
+  const userMessage = `Audit the document below against EVERY requirement listed. Produce exactly one finding per requirement. Do not skip any.
 
-=== SOP TEXT ===
-${sopText.slice(0, 12000)}
+=== DOCUMENT TEXT ===
+${sopText.slice(0, 14000)}
 
-=== REQUIREMENTS TO AUDIT ===
-${chunksText}`;
+=== REQUIREMENTS TO AUDIT (${requirements.length} total) ===
+${reqsText}`;
 
   const content = await callLLMWithFallback(systemPrompt, userMessage, 8192);
   const parsed = JSON.parse(extractJSON(content));
@@ -422,12 +438,12 @@ ${chunksText}`;
 
 export async function runGapAnalysis(
   sopText: string,
-  guidelineChunks: SearchResult[],
   guidelineNames: string[],
   documentName: string,
-  summary: DocumentSummary
+  summary: DocumentSummary,
+  requirements: Requirement[]
 ): Promise<GapReport> {
-  let findings = await runAnalysis(sopText, summary, guidelineChunks);
+  let findings = await auditDocument(sopText, summary, requirements);
 
   // Deduplicate
   const seen = new Set<string>();

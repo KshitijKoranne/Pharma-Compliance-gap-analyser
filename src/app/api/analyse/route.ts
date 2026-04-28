@@ -1,10 +1,9 @@
 import { NextRequest } from "next/server";
 import mammoth from "mammoth";
-import { searchGuidelines, type SearchResult } from "@/lib/vector";
 import {
   summariseDocument,
   filterGuidelines,
-  generateSearchQueries,
+  generateRequirements,
   runGapAnalysis,
 } from "@/lib/analyser";
 import { GUIDELINES } from "@/lib/guidelines-registry";
@@ -63,56 +62,27 @@ export async function POST(request: NextRequest) {
 
         const selectedGuidelines = GUIDELINES.filter((g) => relevantIds.includes(g.id));
         const guidelineNames = selectedGuidelines.map((g) => g.shortName);
+        console.log("Relevant guidelines:", guidelineNames);
 
-        // ── Step 4: Smart semantic search ─────────────────────────────────
-        send({ type: "progress", step: "searching", label: "Finding relevant requirements...", pct: 45 });
+        // ── Step 4: Generate requirements (Pass 2) ────────────────────────
+        send({ type: "progress", step: "searching", label: "Identifying applicable requirements...", pct: 45 });
+        const requirements = await generateRequirements(summary, guidelineNames);
+        console.log(`Generated ${requirements.length} requirements`);
 
-        // Generate targeted queries from document understanding
-        const smartQueries = generateSearchQueries(summary);
-        console.log("Search queries:", smartQueries);
-
-        // Also include one raw SOP slice as a fallback catch-all
-        const rawSlice = sopText.slice(0, 1500);
-
-        const allChunksMap = new Map<string, SearchResult>();
-
-        // Run smart queries
-        await Promise.all(
-          smartQueries.map(async (q) => {
-            const results = await searchGuidelines(q, relevantIds, 8);
-            for (const r of results) {
-              if (!allChunksMap.has(r.id)) allChunksMap.set(r.id, r);
-            }
-          })
-        );
-
-        // Run one raw query as fallback
-        const rawResults = await searchGuidelines(rawSlice, relevantIds, 8);
-        for (const r of rawResults) {
-          if (!allChunksMap.has(r.id)) allChunksMap.set(r.id, r);
-        }
-
-        const chunks = [...allChunksMap.values()]
-          .sort((a, b) => b.score - a.score)
-          .slice(0, 30);
-
-        if (chunks.length === 0) {
-          send({ type: "error", message: "No relevant guideline content found for the filtered guidelines." });
+        if (requirements.length === 0) {
+          send({ type: "error", message: "Could not identify applicable requirements for this document." });
           controller.close();
           return;
         }
 
-        console.log(`Search: ${allChunksMap.size} unique chunks found, using top ${chunks.length}`);
-
-        // ── Step 5: Gap analysis (Pass 2) ─────────────────────────────────
-        send({ type: "progress", step: "analysing", label: "Running gap analysis...", pct: 65 });
-
+        // ── Step 5: Audit document (Pass 3) ───────────────────────────────
+        send({ type: "progress", step: "analysing", label: "Auditing document against requirements...", pct: 65 });
         const report = await runGapAnalysis(
           sopText,
-          chunks,
           guidelineNames,
           file.name,
-          summary
+          summary,
+          requirements
         );
 
         // ── Step 6: Done ──────────────────────────────────────────────────
