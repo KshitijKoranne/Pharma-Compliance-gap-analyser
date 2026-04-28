@@ -23,8 +23,9 @@ interface ProgressState {
 function ProgressBar({ progress }: { progress: ProgressState }) {
   const steps = [
     { key: "parsing",     label: "Reading" },
-    { key: "searching",   label: "Searching" },
     { key: "summarising", label: "Understanding" },
+    { key: "filtering",   label: "Filtering" },
+    { key: "searching",   label: "Searching" },
     { key: "analysing",   label: "Auditing" },
     { key: "finalising",  label: "Report" },
   ];
