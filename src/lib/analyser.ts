@@ -1,106 +1,54 @@
 import type { Guideline } from "./guidelines-registry";
+import type { SearchResult } from "./vector";
 
-/**
- * Robustly extract JSON from LLM output that may contain prose preamble,
- * markdown fences, or trailing text around the JSON object.
- */
+// ── JSON extraction ─────────────────────────────────────────────────────────
+
 function extractJSON(raw: string): string {
   let cleaned = raw.replace(/```json\n?|\n?```/g, "").trim();
-
   const startObj = cleaned.indexOf("{");
   const startArr = cleaned.indexOf("[");
-
   let start: number;
   let closeChar: string;
-
-  if (startObj === -1 && startArr === -1) {
-    throw new Error(`No JSON found in LLM response: ${raw.slice(0, 120)}...`);
-  } else if (startArr === -1 || (startObj !== -1 && startObj < startArr)) {
-    start = startObj;
-    closeChar = "}";
-  } else {
-    start = startArr;
-    closeChar = "]";
-  }
-
+  if (startObj === -1 && startArr === -1) throw new Error(`No JSON in LLM response: ${raw.slice(0, 120)}...`);
+  if (startArr === -1 || (startObj !== -1 && startObj < startArr)) { start = startObj; closeChar = "}"; }
+  else { start = startArr; closeChar = "]"; }
   const end = cleaned.lastIndexOf(closeChar);
-  if (end <= start) {
-    throw new Error(`Malformed JSON in LLM response: ${raw.slice(0, 120)}...`);
-  }
-
+  if (end <= start) throw new Error(`Malformed JSON in LLM response: ${raw.slice(0, 120)}...`);
   return cleaned.slice(start, end + 1);
 }
 
-// ── Shared LLM call helper ──────────────────────────────────────────────────
+// ── LLM helper ──────────────────────────────────────────────────────────────
 
-async function callLLM(
-  systemPrompt: string,
-  userMessage: string,
-  apiKey: string,
-  isOpenRouter: boolean,
-  maxTokens: number
-): Promise<string> {
-  const url = isOpenRouter
-    ? "https://openrouter.ai/api/v1/chat/completions"
-    : "https://integrate.api.nvidia.com/v1/chat/completions";
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${apiKey}`,
-  };
-  if (isOpenRouter) {
-    headers["HTTP-Referer"] = "https://kjrlabs.in";
-    headers["X-Title"] = "Pharma Compliance Gap Analyser";
-  }
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers,
+async function callLLM(system: string, user: string, key: string, isOR: boolean, maxTok: number): Promise<string> {
+  const url = isOR ? "https://openrouter.ai/api/v1/chat/completions" : "https://integrate.api.nvidia.com/v1/chat/completions";
+  const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: `Bearer ${key}` };
+  if (isOR) { headers["HTTP-Referer"] = "https://kjrlabs.in"; headers["X-Title"] = "Pharma Compliance Gap Analyser"; }
+  const res = await fetch(url, {
+    method: "POST", headers,
     body: JSON.stringify({
-      model: isOpenRouter
-        ? "anthropic/claude-3.5-sonnet"
-        : "meta/llama-3.3-70b-instruct",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userMessage },
-      ],
-      temperature: 0.0,
-      max_tokens: maxTokens,
+      model: isOR ? "anthropic/claude-3.5-sonnet" : "meta/llama-3.3-70b-instruct",
+      messages: [{ role: "system", content: system }, { role: "user", content: user }],
+      temperature: 0.0, max_tokens: maxTok,
     }),
   });
-
-  if (!response.ok) {
-    throw new Error(`LLM error (${response.status}): ${await response.text()}`);
-  }
-
-  const data = await response.json();
+  if (!res.ok) throw new Error(`LLM error (${res.status}): ${await res.text()}`);
+  const data = await res.json();
   return data.choices[0].message.content;
 }
 
-/** Try NVIDIA first, fallback to OpenRouter if available */
-async function callLLMWithFallback(
-  systemPrompt: string,
-  userMessage: string,
-  maxTokens: number
-): Promise<string> {
-  const nvidiaKey = process.env.NVIDIA_API_KEY!;
-  const openRouterKey = process.env.OPENROUTER_API_KEY;
-  const hasOpenRouter = openRouterKey && openRouterKey !== "placeholder";
-
-  try {
-    return await callLLM(systemPrompt, userMessage, nvidiaKey, false, maxTokens);
-  } catch (err) {
-    console.warn("NVIDIA call failed:", err);
-    if (!hasOpenRouter) throw err;
-    return await callLLM(systemPrompt, userMessage, openRouterKey!, true, maxTokens);
-  }
+async function llm(system: string, user: string, maxTok: number): Promise<string> {
+  const nk = process.env.NVIDIA_API_KEY!;
+  const ork = process.env.OPENROUTER_API_KEY;
+  const hasOR = ork && ork !== "placeholder";
+  try { return await callLLM(system, user, nk, false, maxTok); }
+  catch (e) { console.warn("NVIDIA failed:", e); if (!hasOR) throw e; return await callLLM(system, user, ork!, true, maxTok); }
 }
 
-// ── Types ────────────────────────────────────────────────────────────────────
+// ── Types ───────────────────────────────────────────────────────────────────
 
 export interface GapFinding {
   section: string;
-  status: "COMPLIANT" | "PARTIAL" | "GAP";
+  status: "GAP" | "PARTIAL";
   requirement: string;
   finding: string;
   guidelineReference: string;
@@ -121,14 +69,6 @@ export interface DocumentSummary {
   gmpActivities: string[];
 }
 
-export interface Requirement {
-  id: string;
-  guidelineReference: string;
-  section: string;
-  requirement: string;
-  whyRelevant: string;
-}
-
 export interface GapReport {
   overallScore: string;
   summary: DocumentSummary;
@@ -141,158 +81,104 @@ export interface GapReport {
   documentName: string;
 }
 
-// ── Pass 1: Understand the document ──────────────────────────────────────────
-
-const SUMMARISER_PROMPT = `You are a pharmaceutical regulatory expert. Read the document below and produce a structured understanding of it.
-
-IMPORTANT: Read the ENTIRE text carefully, especially the References section — it tells you which regulatory frameworks this document intends to comply with.
-
-Return ONLY valid JSON, no markdown, no preamble, no trailing text:
-{
-  "title": "The document title as written",
-  "documentType": "e.g. SOP, Policy, Protocol, Work Instruction, Batch Record, Specification",
-  "purpose": "One sentence: what this document is designed to achieve",
-  "scope": "One sentence: what operations, systems, or products this covers",
-  "covers": ["List of specific topics, processes, or activities explicitly addressed"],
-  "excludes": ["List of things explicitly excluded or out of scope"],
-  "keyProcesses": ["The main procedural steps or workflow elements described"],
-  "riskLevel": "HIGH if GMP-critical (manufacturing, testing, validation, data integrity), MEDIUM if quality-adjacent (change control, CAPA, training), LOW if administrative",
-  "regulatoryReferences": ["Every regulatory standard cited in the document, e.g. ICH Q10, ICH Q9, EU GMP Annex 15, 21 CFR Part 211"],
-  "applicableProductTypes": ["e.g. API, finished dosage form, biologics, all pharmaceutical products"],
-  "gmpActivities": ["From this list, pick ALL that apply: manufacturing, testing, packaging, labelling, storage, distribution, change control, deviation management, CAPA, validation, qualification, calibration, cleaning, stability, documentation, training, supplier management, complaints, recalls, risk management, quality system, data integrity, technology transfer"]
-}`;
+// ── Pass 1: Understand the document ─────────────────────────────────────────
 
 export async function summariseDocument(sopText: string): Promise<DocumentSummary> {
   const beginChars = 5000;
   const endChars = 3000;
-  let docSlice: string;
+  let docSlice = sopText.length <= beginChars + endChars
+    ? sopText
+    : sopText.slice(0, beginChars) + "\n\n[... middle omitted ...]\n\n" + sopText.slice(-endChars);
 
-  if (sopText.length <= beginChars + endChars) {
-    docSlice = sopText;
-  } else {
-    docSlice =
-      sopText.slice(0, beginChars) +
-      "\n\n[... middle sections omitted for brevity ...]\n\n" +
-      sopText.slice(-endChars);
-  }
-
-  const content = await callLLMWithFallback(
-    SUMMARISER_PROMPT,
-    `=== DOCUMENT ===\n${docSlice}`,
-    1024
-  );
-
-  const parsed = JSON.parse(extractJSON(content));
-
-  return {
-    title: parsed.title || "Unknown",
-    documentType: parsed.documentType || "Unknown",
-    purpose: parsed.purpose || "Not determined",
-    scope: parsed.scope || "Not determined",
-    covers: parsed.covers || [],
-    excludes: parsed.excludes || [],
-    keyProcesses: parsed.keyProcesses || [],
-    riskLevel: parsed.riskLevel || "HIGH",
-    regulatoryReferences: parsed.regulatoryReferences || [],
-    applicableProductTypes: parsed.applicableProductTypes || [],
-    gmpActivities: parsed.gmpActivities || [],
-  };
-}
-
-// ── Pass 1.5: Intelligent Guideline Filtering ────────────────────────────────
-
-const GUIDELINE_FILTER_PROMPT = `You are a pharmaceutical regulatory expert. Given a document summary and a list of available guidelines, determine which guidelines this document should be audited against.
-
-RULES:
-1. ONLY include guidelines whose subject matter DIRECTLY relates to the document's purpose and GMP activities.
-2. Be SELECTIVE. A change control SOP should be audited against quality system, risk management, and GMP guidelines — NOT against stability testing, impurity limits, dissolution tests, or biotech-specific guidelines.
-3. Pharmacopoeial test guidelines (Q4B annexes for dissolution, friability, endotoxins, etc.) are ONLY relevant to analytical test method documents.
-4. Biotech guidelines (Q5A-Q5E) are ONLY relevant to biological/biotechnological product documents.
-5. Stability guidelines (Q1A-Q1E) are ONLY relevant to stability studies or protocols.
-6. Impurity guidelines (Q3A-Q3D) are ONLY relevant to impurity specifications or analytical methods.
-7. When in doubt, EXCLUDE. A false gap from an irrelevant guideline is worse than missing a marginal one.
+  const system = `You are a pharmaceutical regulatory expert. Read the document and produce a structured understanding.
+Read the ENTIRE text, especially the References section.
 
 Return ONLY valid JSON, no markdown, no preamble:
 {
-  "relevantGuidelineIds": ["ICH-Q10", "ICH-Q9R1"],
-  "reasoning": "Brief explanation"
+  "title": "Document title as written",
+  "documentType": "e.g. SOP, Policy, Protocol, Work Instruction, Batch Record, Specification",
+  "purpose": "One sentence: what this document achieves",
+  "scope": "One sentence: what operations/systems/products this covers",
+  "covers": ["Specific topics, processes, activities explicitly addressed"],
+  "excludes": ["Things explicitly excluded or out of scope"],
+  "keyProcesses": ["Main procedural steps or workflow elements"],
+  "riskLevel": "HIGH/MEDIUM/LOW",
+  "regulatoryReferences": ["Every standard cited, e.g. ICH Q10, 21 CFR Part 211"],
+  "applicableProductTypes": ["e.g. API, finished dosage form, biologics"],
+  "gmpActivities": ["From: manufacturing, testing, packaging, labelling, storage, distribution, change control, deviation management, CAPA, validation, qualification, calibration, cleaning, stability, documentation, training, supplier management, complaints, recalls, risk management, quality system, data integrity, technology transfer"]
 }`;
 
-export async function filterGuidelines(
-  summary: DocumentSummary,
-  availableGuidelines: Guideline[],
-  userSelectedIds: string[]
-): Promise<string[]> {
-  const candidates = availableGuidelines.filter((g) => userSelectedIds.includes(g.id));
-
-  const registryText = candidates
-    .map((g) => `- ${g.id}: ${g.shortName} — ${g.description}`)
-    .join("\n");
-
-  const documentContext = `DOCUMENT SUMMARY:
-- Title: ${summary.title}
-- Type: ${summary.documentType}
-- Purpose: ${summary.purpose}
-- Scope: ${summary.scope}
-- Covers: ${summary.covers.join("; ")}
-- Excludes: ${summary.excludes.length ? summary.excludes.join("; ") : "nothing stated"}
-- Key processes: ${summary.keyProcesses.join("; ")}
-- GMP activities: ${summary.gmpActivities.join("; ")}
-- Product types: ${summary.applicableProductTypes.join("; ")}
-- Regulatory references cited in document: ${summary.regulatoryReferences.length ? summary.regulatoryReferences.join("; ") : "none"}
-
-AVAILABLE GUIDELINES:
-${registryText}
-
-Return ONLY the IDs of guidelines that are genuinely relevant to audit this document against.`;
-
-  const content = await callLLMWithFallback(
-    GUIDELINE_FILTER_PROMPT,
-    documentContext,
-    512
-  );
-
-  const parsed = JSON.parse(extractJSON(content));
-  let filteredIds: string[] = parsed.relevantGuidelineIds || [];
-
-  // Safety net: always include guidelines the document itself cites
-  const citedRefs = summary.regulatoryReferences.map((r) => r.toLowerCase());
-  for (const g of candidates) {
-    if (filteredIds.includes(g.id)) continue;
-    const shortLower = g.shortName.toLowerCase();
-    if (
-      citedRefs.some(
-        (ref) =>
-          shortLower.includes(ref) ||
-          ref.includes(shortLower) ||
-          shortLower.replace(/[^a-z0-9]/g, "").includes(ref.replace(/[^a-z0-9]/g, ""))
-      )
-    ) {
-      filteredIds.push(g.id);
-    }
-  }
-
-  const validIds = new Set(candidates.map((g) => g.id));
-  filteredIds = filteredIds.filter((id) => validIds.has(id));
-
-  if (filteredIds.length === 0) {
-    console.warn("Guideline filter returned 0 results — falling back to user selection");
-    return userSelectedIds;
-  }
-
-  console.log(
-    `Guideline filter: ${userSelectedIds.length} user-selected → ${filteredIds.length} relevant`,
-    filteredIds
-  );
-  return filteredIds;
+  const content = await llm(system, `=== DOCUMENT ===\n${docSlice}`, 1024);
+  const p = JSON.parse(extractJSON(content));
+  return {
+    title: p.title || "Unknown", documentType: p.documentType || "Unknown",
+    purpose: p.purpose || "Not determined", scope: p.scope || "Not determined",
+    covers: p.covers || [], excludes: p.excludes || [],
+    keyProcesses: p.keyProcesses || [], riskLevel: p.riskLevel || "HIGH",
+    regulatoryReferences: p.regulatoryReferences || [],
+    applicableProductTypes: p.applicableProductTypes || [],
+    gmpActivities: p.gmpActivities || [],
+  };
 }
 
-// ── Pass 2: Generate applicable requirements (LLM-driven) ───────────────────
+// ── Pass 1.5: Filter guidelines ─────────────────────────────────────────────
 
-function buildRequirementGenPrompt(summary: DocumentSummary): string {
-  return `You are a pharmaceutical regulatory compliance expert. You have deep, thorough knowledge of every guideline listed below.
+export async function filterGuidelines(
+  summary: DocumentSummary, available: Guideline[], userIds: string[]
+): Promise<string[]> {
+  const candidates = available.filter((g) => userIds.includes(g.id));
+  const registry = candidates.map((g) => `- ${g.id}: ${g.shortName} — ${g.description}`).join("\n");
 
-Given a document summary and the applicable guidelines, identify ALL specific requirements from those guidelines that this document SHOULD address.
+  const system = `You are a pharmaceutical regulatory expert. Given a document summary and available guidelines, determine which guidelines are relevant for auditing this document.
+
+RULES:
+1. ONLY include guidelines directly relevant to the document's purpose and GMP activities.
+2. Pharmacopoeial test guidelines (Q4B annexes) → only for analytical test documents.
+3. Biotech guidelines (Q5A-Q5E) → only for biological product documents.
+4. Stability guidelines (Q1A-Q1E) → only for stability protocols/studies.
+5. Impurity guidelines (Q3A-Q3D) → only for impurity specs/methods.
+6. When in doubt, EXCLUDE.
+
+Return ONLY valid JSON: { "relevantGuidelineIds": ["ID1", "ID2"], "reasoning": "..." }`;
+
+  const user = `DOCUMENT: ${summary.documentType} — "${summary.title}"
+Purpose: ${summary.purpose}
+Scope: ${summary.scope}
+Covers: ${summary.covers.join("; ")}
+Excludes: ${summary.excludes.length ? summary.excludes.join("; ") : "none"}
+GMP activities: ${summary.gmpActivities.join("; ")}
+Product types: ${summary.applicableProductTypes.join("; ")}
+Cited references: ${summary.regulatoryReferences.length ? summary.regulatoryReferences.join("; ") : "none"}
+
+AVAILABLE GUIDELINES:\n${registry}`;
+
+  const content = await llm(system, user, 512);
+  let ids: string[] = (JSON.parse(extractJSON(content)).relevantGuidelineIds || []);
+
+  // Safety net: include guidelines the document itself cites
+  const cited = summary.regulatoryReferences.map((r) => r.toLowerCase().replace(/[^a-z0-9]/g, ""));
+  for (const g of candidates) {
+    if (ids.includes(g.id)) continue;
+    const norm = g.shortName.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (cited.some((c) => norm.includes(c) || c.includes(norm))) ids.push(g.id);
+  }
+
+  const valid = new Set(candidates.map((g) => g.id));
+  ids = ids.filter((id) => valid.has(id));
+  if (ids.length === 0) return userIds;
+
+  console.log(`Filter: ${userIds.length} → ${ids.length}`, ids);
+  return ids;
+}
+
+// ── Pass 2: Per-guideline audit using REAL guideline chunks ─────────────────
+
+function buildPerGuidelineAuditPrompt(summary: DocumentSummary, guidelineName: string): string {
+  return `You are a pharmaceutical GMP regulatory auditor. You will receive:
+1. A ${summary.documentType} document
+2. Sections from ${guidelineName} (the actual guideline text)
+
+Your task: Read the document thoroughly. Read every guideline section provided. For each guideline section, determine if the document adequately addresses the requirements in that section.
 
 DOCUMENT BEING AUDITED:
 - Type: ${summary.documentType}
@@ -300,178 +186,97 @@ DOCUMENT BEING AUDITED:
 - Scope: ${summary.scope}
 - Covers: ${summary.covers.join("; ")}
 - Excludes: ${summary.excludes.length ? summary.excludes.join("; ") : "nothing stated"}
-- Key processes: ${summary.keyProcesses.join("; ")}
 - GMP Activities: ${summary.gmpActivities.join("; ")}
-- Product types: ${summary.applicableProductTypes.join("; ")}
 
-HOW TO SELECT REQUIREMENTS:
-1. For each applicable guideline, identify the SECTIONS that are relevant to "${summary.gmpActivities.join(", ")}". Ignore sections about unrelated topics.
-2. From those sections, extract every specific, auditable requirement.
-3. Include exact section numbers from the guideline.
-4. Pay special attention to these commonly missed areas:
-   - Scope coverage: does the guideline require certain activities (e.g. outsourced operations) to be in scope?
-   - Risk management tools: does the guideline require specific methodologies (FMEA, fault tree, risk matrix)?
-   - Patient safety: is it required as a primary consideration?
-   - Management oversight: does the guideline require management review or senior management involvement?
-   - Post-action reviews: effectiveness checks, periodic reviews, trending
-   - Emergency or expedited provisions
-   - Re-validation or re-qualification triggers
-   - Record retention periods with specific durations
-   - Cross-system linkages (e.g. CAPA, deviation, training)
-   - Continuous improvement and knowledge management
-5. Aim for 20–30 requirements. Be thorough — it is better to include a borderline requirement than miss a real gap.
-6. Each requirement must be specific and auditable — not vague.
+INSTRUCTIONS:
+1. Read EVERY guideline section provided below.
+2. For each section, identify specific requirements that this ${summary.documentType} should address.
+3. ONLY report findings where the document has a GAP or PARTIAL compliance.
+4. SKIP sections that are not relevant to this document's purpose — e.g. if auditing a Change Control SOP, skip sections about production equipment details or packaging operations.
+5. SKIP requirements that the document fully satisfies — we only want problems.
+
+CLASSIFICATION:
+- GAP: The requirement is absent, or the document explicitly excludes/contradicts it, or the document only vaguely mentions the topic without addressing the specific requirement.
+- PARTIAL: The requirement is partially addressed but specific sub-elements are missing.
+
+Be strict: a vague mention is NOT compliance. The document must specifically address what the guideline requires.
 
 Return ONLY valid JSON, no markdown, no preamble:
 {
-  "requirements": [
-    {
-      "id": "REQ-01",
-      "guidelineReference": "Guideline name, Section X.Y.Z",
-      "section": "X.Y.Z Section Title",
-      "requirement": "The specific requirement statement",
-      "whyRelevant": "Brief explanation of why this applies to this document"
-    }
-  ]
-}`;
-}
-
-export async function generateRequirements(
-  summary: DocumentSummary,
-  guidelineNames: string[]
-): Promise<Requirement[]> {
-  const systemPrompt = buildRequirementGenPrompt(summary);
-
-  const userMessage = `APPLICABLE GUIDELINES TO DRAW REQUIREMENTS FROM:
-${guidelineNames.join(", ")}
-
-Identify 20–30 specific, auditable requirements from these guidelines that this ${summary.documentType} about "${summary.purpose}" should address. Be thorough.`;
-
-  const content = await callLLMWithFallback(
-    systemPrompt,
-    userMessage,
-    6144
-  );
-
-  const parsed = JSON.parse(extractJSON(content));
-  const reqs: Requirement[] = parsed.requirements || [];
-
-  // Assign IDs if missing
-  return reqs.map((r, i) => ({
-    ...r,
-    id: r.id || `REQ-${String(i + 1).padStart(2, "0")}`,
-  }));
-}
-
-// ── Pass 3: Audit SOP against generated requirements ─────────────────────────
-
-function buildAuditPrompt(summary: DocumentSummary): string {
-  return `You are a pharmaceutical GMP regulatory auditor. You will receive:
-1. The full text of a ${summary.documentType}
-2. A list of specific regulatory requirements this document should address
-
-Your job: identify GAPS and PARTIAL compliance for each requirement. You are looking for what is MISSING or INSUFFICIENT — not what is compliant.
-
-DOCUMENT CONTEXT:
-- Type: ${summary.documentType}
-- Purpose: ${summary.purpose}
-- Scope: ${summary.scope}
-- Covers: ${summary.covers.join("; ")}
-- Excludes: ${summary.excludes.length ? summary.excludes.join("; ") : "nothing stated"}
-
-CLASSIFICATION RULES (apply strictly):
-
-GAP — Use when:
-- The requirement is completely absent from the document
-- The document explicitly excludes or contradicts something the guideline requires
-- The document mentions the topic generically but does NOT address the SPECIFIC regulatory requirement
-- Example: SOP says "risk evaluation" but does NOT mention specific risk tools (FMEA, fault tree, risk matrix) → GAP for a risk tool requirement
-
-PARTIAL — Use when:
-- The requirement is genuinely touched upon but specific mandatory sub-elements are missing
-- The general topic is covered but not with the specificity the guideline demands
-- A cross-reference to another SOP exists but the requirement is not addressed within THIS document
-- Example: SOP has "impact assessment" section but does not explicitly consider patient safety → PARTIAL
-
-If a requirement IS fully and explicitly addressed in the document, simply SKIP it — do not include it in findings. We only want gaps and partial compliance.
-
-IMPORTANT:
-- Read the ENTIRE document text before classifying. Requirements may be addressed in unexpected sections.
-- If the document EXCLUDES something that a guideline REQUIRES (e.g. excludes outsourced activities), that is a GAP.
-- Be strict: a vague mention of a topic is NOT compliance. The document must specifically address what the guideline requires.
-
-Finding field: 1–2 precise sentences stating EXACTLY what is missing or insufficient.
-
-Return ONLY valid JSON, no markdown, no preamble, no trailing text:
-{
   "findings": [
     {
-      "section": "SOP section where partial coverage exists, or 'Not addressed'",
+      "section": "Document section reference or 'Not addressed'",
       "status": "GAP" | "PARTIAL",
-      "requirement": "The requirement text as given",
-      "finding": "1-2 sentence observation of what is missing",
-      "guidelineReference": "e.g. ICH Q10, Section 3.2.4",
+      "requirement": "The specific requirement from the guideline, with section number",
+      "finding": "1-2 sentences: what exactly is missing or insufficient",
+      "guidelineReference": "${guidelineName}, Section X.Y",
       "confidence": "HIGH" | "MEDIUM" | "LOW"
     }
   ]
 }`;
 }
 
-export async function auditDocument(
+export async function auditAgainstGuideline(
   sopText: string,
   summary: DocumentSummary,
-  requirements: Requirement[]
+  guidelineName: string,
+  chunks: SearchResult[]
 ): Promise<GapFinding[]> {
-  const systemPrompt = buildAuditPrompt(summary);
+  if (chunks.length === 0) return [];
 
-  const reqsText = requirements
-    .map(
-      (r) =>
-        `[${r.id}] ${r.guidelineReference} — ${r.section}\nRequirement: ${r.requirement}\nWhy relevant: ${r.whyRelevant}`
-    )
+  const system = buildPerGuidelineAuditPrompt(summary, guidelineName);
+
+  // Build guideline sections text from real chunks, sorted by section
+  const sortedChunks = [...chunks].sort((a, b) => a.metadata.chunkIndex - b.metadata.chunkIndex);
+  const sectionsText = sortedChunks
+    .map((c, i) => `[SECTION ${i + 1}] ${c.metadata.section}\n${c.metadata.text}`)
     .join("\n\n---\n\n");
 
-  const userMessage = `Audit the document below against every requirement listed. Only report GAP and PARTIAL findings — skip requirements that are fully addressed.
+  const user = `=== DOCUMENT TEXT ===
+${sopText.slice(0, 12000)}
 
-=== DOCUMENT TEXT ===
-${sopText.slice(0, 14000)}
+=== ${guidelineName} — GUIDELINE SECTIONS (${chunks.length} sections) ===
+${sectionsText}`;
 
-=== REQUIREMENTS TO AUDIT (${requirements.length} total) ===
-${reqsText}`;
-
-  const content = await callLLMWithFallback(systemPrompt, userMessage, 8192);
+  const content = await llm(system, user, 4096);
   const parsed = JSON.parse(extractJSON(content));
   return parsed.findings || [];
 }
 
-// ── Main export ───────────────────────────────────────────────────────────────
+// ── Main export ─────────────────────────────────────────────────────────────
 
 export async function runGapAnalysis(
   sopText: string,
-  guidelineNames: string[],
-  documentName: string,
   summary: DocumentSummary,
-  requirements: Requirement[]
+  guidelineChunksMap: Map<string, { name: string; chunks: SearchResult[] }>,
+  documentName: string
 ): Promise<GapReport> {
-  let findings = await auditDocument(sopText, summary, requirements);
+  // Run per-guideline audits in parallel
+  const auditPromises = [...guidelineChunksMap.entries()].map(
+    ([_id, { name, chunks }]) => auditAgainstGuideline(sopText, summary, name, chunks)
+  );
 
-  // Deduplicate
+  const allResults = await Promise.all(auditPromises);
+  let findings = allResults.flat();
+
+  // Deduplicate across guidelines
   const seen = new Set<string>();
   findings = findings.filter((f) => {
-    const key = `${f.guidelineReference}||${f.requirement.slice(0, 60)}`;
+    const key = `${f.guidelineReference}||${f.requirement.slice(0, 80)}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
 
-  const criticalGaps = findings.filter((f) => f.status === "GAP");
-  const minorGaps = findings.filter((f) => f.status === "PARTIAL");
+  const gaps = findings.filter((f) => f.status === "GAP");
+  const partial = findings.filter((f) => f.status === "PARTIAL");
+  const guidelineNames = [...guidelineChunksMap.values()].map((v) => v.name);
 
   return {
-    overallScore: `${criticalGaps.length} gaps, ${minorGaps.length} partial — out of ${requirements.length} requirements checked`,
+    overallScore: `${gaps.length} gaps, ${partial.length} partial — across ${guidelineNames.length} guidelines`,
     summary,
-    criticalGaps,
-    minorGaps,
+    criticalGaps: gaps,
+    minorGaps: partial,
     compliantAreas: [],
     allFindings: findings,
     analysedAt: new Date().toISOString(),
