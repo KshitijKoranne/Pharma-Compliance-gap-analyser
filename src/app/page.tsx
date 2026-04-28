@@ -188,7 +188,7 @@ export default function Home() {
   const [progress, setProgress] = useState<ProgressState | null>(null);
   const [report, setReport] = useState<GapReport | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"gaps" | "partial" | "compliant" | "all">("gaps");
+  const [activeTab, setActiveTab] = useState<"gaps" | "partial" | "all">("gaps");
   const fileRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
 
@@ -275,8 +275,8 @@ export default function Home() {
   }
 
   const tabFindings: Record<string, GapFinding[]> = report
-    ? { gaps: report.criticalGaps, partial: report.minorGaps, compliant: report.compliantAreas, all: report.allFindings }
-    : { gaps: [], partial: [], compliant: [], all: [] };
+    ? { gaps: report.criticalGaps, partial: report.minorGaps, all: report.allFindings }
+    : { gaps: [], partial: [], all: [] };
 
   const canRun = !!file && selectedCats.size > 0 && getSelectedGuidelineIds().length > 0;
   const loading = !!progress;
@@ -403,11 +403,10 @@ export default function Home() {
             {report && (
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                 {/* Score cards */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
                   {[
                     { label: "Gaps Found",  value: report.criticalGaps.length,   color: "var(--danger)",  bg: "var(--danger-bg)",  border: "var(--danger-border)" },
                     { label: "Partial",     value: report.minorGaps.length,      color: "var(--warning)", bg: "var(--warning-bg)", border: "var(--warning-border)" },
-                    { label: "Compliant",   value: report.compliantAreas.length, color: "var(--success)", bg: "var(--success-bg)", border: "var(--success-border)" },
                   ].map((s, i) => (
                     <div key={i} style={{ background: s.bg, border: `1px solid ${s.border}`, borderRadius: 12, padding: "18px 16px", textAlign: "center" }}>
                       <div style={{ fontSize: 34, fontWeight: 800, color: s.color, lineHeight: 1 }}>{s.value}</div>
@@ -439,7 +438,6 @@ export default function Home() {
                     {([
                       { key: "gaps",      label: "Gaps",      count: tabFindings.gaps.length,      color: "var(--danger)" },
                       { key: "partial",   label: "Partial",   count: tabFindings.partial.length,   color: "var(--warning)" },
-                      { key: "compliant", label: "Compliant", count: tabFindings.compliant.length, color: "var(--success)" },
                       { key: "all",       label: "All",       count: tabFindings.all.length,       color: "var(--text-secondary)" },
                     ] as const).map((tab) => (
                       <button key={tab.key} onClick={() => setActiveTab(tab.key)}

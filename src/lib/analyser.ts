@@ -289,38 +289,12 @@ Return ONLY the IDs of guidelines that are genuinely relevant to audit this docu
 
 // ── Pass 2: Generate applicable requirements (LLM-driven) ───────────────────
 
-const REQUIREMENT_GEN_PROMPT = `You are a pharmaceutical regulatory compliance expert with deep knowledge of ICH, EU GMP, FDA, and WHO guidelines.
+function buildRequirementGenPrompt(summary: DocumentSummary): string {
+  return `You are a pharmaceutical regulatory compliance expert. You have deep, thorough knowledge of every guideline listed below.
 
-Given a document summary and a list of applicable guidelines, identify the SPECIFIC requirements from those guidelines that this document SHOULD address.
+Given a document summary and the applicable guidelines, identify ALL specific requirements from those guidelines that this document SHOULD address.
 
-CRITICAL RULES:
-1. Only list requirements that are DIRECTLY relevant to the document's purpose and scope.
-2. For each guideline, focus on the SECTIONS that relate to the document's GMP activities — not the entire guideline.
-   - For a Change Control SOP audited against ICH Q7: focus on Section 12 (Change Control), Section 2.1 (Quality Management principles), Section 6 (Documentation) — NOT Section 4 (Buildings), Section 5 (Process Equipment), Section 8 (Production).
-   - For a Stability Protocol audited against ICH Q1A: focus on storage conditions, testing intervals, data evaluation — NOT manufacturing controls.
-3. Include exact section numbers from the guideline.
-4. Aim for 15–25 requirements that are genuinely applicable. Quality over quantity.
-5. Each requirement should be specific and auditable — not vague.
-
-Return ONLY valid JSON, no markdown, no preamble:
-{
-  "requirements": [
-    {
-      "id": "REQ-01",
-      "guidelineReference": "ICH Q10, Section 3.2.4",
-      "section": "3.2.4 Change Management",
-      "requirement": "A change management system should be established to evaluate proposed changes that might affect product quality, regulatory compliance, or patient safety.",
-      "whyRelevant": "Core change control requirement — directly addresses this SOP's purpose"
-    }
-  ]
-}`;
-
-export async function generateRequirements(
-  summary: DocumentSummary,
-  guidelineNames: string[]
-): Promise<Requirement[]> {
-  const userMessage = `DOCUMENT SUMMARY:
-- Title: ${summary.title}
+DOCUMENT BEING AUDITED:
 - Type: ${summary.documentType}
 - Purpose: ${summary.purpose}
 - Scope: ${summary.scope}
@@ -330,15 +304,53 @@ export async function generateRequirements(
 - GMP Activities: ${summary.gmpActivities.join("; ")}
 - Product types: ${summary.applicableProductTypes.join("; ")}
 
-APPLICABLE GUIDELINES TO DRAW REQUIREMENTS FROM:
+HOW TO SELECT REQUIREMENTS:
+1. For each applicable guideline, identify the SECTIONS that are relevant to "${summary.gmpActivities.join(", ")}". Ignore sections about unrelated topics.
+2. From those sections, extract every specific, auditable requirement.
+3. Include exact section numbers from the guideline.
+4. Pay special attention to these commonly missed areas:
+   - Scope coverage: does the guideline require certain activities (e.g. outsourced operations) to be in scope?
+   - Risk management tools: does the guideline require specific methodologies (FMEA, fault tree, risk matrix)?
+   - Patient safety: is it required as a primary consideration?
+   - Management oversight: does the guideline require management review or senior management involvement?
+   - Post-action reviews: effectiveness checks, periodic reviews, trending
+   - Emergency or expedited provisions
+   - Re-validation or re-qualification triggers
+   - Record retention periods with specific durations
+   - Cross-system linkages (e.g. CAPA, deviation, training)
+   - Continuous improvement and knowledge management
+5. Aim for 20–30 requirements. Be thorough — it is better to include a borderline requirement than miss a real gap.
+6. Each requirement must be specific and auditable — not vague.
+
+Return ONLY valid JSON, no markdown, no preamble:
+{
+  "requirements": [
+    {
+      "id": "REQ-01",
+      "guidelineReference": "Guideline name, Section X.Y.Z",
+      "section": "X.Y.Z Section Title",
+      "requirement": "The specific requirement statement",
+      "whyRelevant": "Brief explanation of why this applies to this document"
+    }
+  ]
+}`;
+}
+
+export async function generateRequirements(
+  summary: DocumentSummary,
+  guidelineNames: string[]
+): Promise<Requirement[]> {
+  const systemPrompt = buildRequirementGenPrompt(summary);
+
+  const userMessage = `APPLICABLE GUIDELINES TO DRAW REQUIREMENTS FROM:
 ${guidelineNames.join(", ")}
 
-List 15–25 specific, auditable requirements from these guidelines that this ${summary.documentType} should address. Focus on the sections of each guideline that relate to ${summary.gmpActivities.slice(0, 5).join(", ")}.`;
+Identify 20–30 specific, auditable requirements from these guidelines that this ${summary.documentType} about "${summary.purpose}" should address. Be thorough.`;
 
   const content = await callLLMWithFallback(
-    REQUIREMENT_GEN_PROMPT,
+    systemPrompt,
     userMessage,
-    4096
+    6144
   );
 
   const parsed = JSON.parse(extractJSON(content));
@@ -358,7 +370,7 @@ function buildAuditPrompt(summary: DocumentSummary): string {
 1. The full text of a ${summary.documentType}
 2. A list of specific regulatory requirements this document should address
 
-Your job: evaluate whether the document satisfies EACH requirement.
+Your job: identify GAPS and PARTIAL compliance for each requirement. You are looking for what is MISSING or INSUFFICIENT — not what is compliant.
 
 DOCUMENT CONTEXT:
 - Type: ${summary.documentType}
@@ -369,37 +381,35 @@ DOCUMENT CONTEXT:
 
 CLASSIFICATION RULES (apply strictly):
 
-GAP — The requirement is:
-- Completely absent from the document
-- The document explicitly excludes or contradicts it
+GAP — Use when:
+- The requirement is completely absent from the document
+- The document explicitly excludes or contradicts something the guideline requires
 - The document mentions the topic generically but does NOT address the SPECIFIC regulatory requirement
-- Example: SOP mentions "risk evaluation" but does NOT reference specific risk tools (FMEA, fault tree, risk matrix) → GAP for an ICH Q9 risk tool requirement
+- Example: SOP says "risk evaluation" but does NOT mention specific risk tools (FMEA, fault tree, risk matrix) → GAP for a risk tool requirement
 
-PARTIAL — The requirement is:
-- Genuinely touched upon but specific mandatory sub-elements are missing
+PARTIAL — Use when:
+- The requirement is genuinely touched upon but specific mandatory sub-elements are missing
 - The general topic is covered but not with the specificity the guideline demands
+- A cross-reference to another SOP exists but the requirement is not addressed within THIS document
 - Example: SOP has "impact assessment" section but does not explicitly consider patient safety → PARTIAL
 
-COMPLIANT — The requirement is:
-- EXPLICITLY and SPECIFICALLY addressed in the document
-- You can cite a specific section/paragraph that satisfies it
-- The content matches what the guideline actually requires, not just the topic area
+If a requirement IS fully and explicitly addressed in the document, simply SKIP it — do not include it in findings. We only want gaps and partial compliance.
 
 IMPORTANT:
-- Read the ENTIRE SOP text before classifying. Requirements may be addressed in unexpected sections.
-- "This SOP cross-references another SOP" counts as PARTIAL at best — the requirement should be addressed HERE or explicitly delegated with a specific cross-reference.
-- If the document EXCLUDES something that a guideline REQUIRES (e.g. excludes outsourced activities when ICH Q7/Q10 requires them in scope), that is a GAP.
+- Read the ENTIRE document text before classifying. Requirements may be addressed in unexpected sections.
+- If the document EXCLUDES something that a guideline REQUIRES (e.g. excludes outsourced activities), that is a GAP.
+- Be strict: a vague mention of a topic is NOT compliance. The document must specifically address what the guideline requires.
 
-Finding field: 1–2 precise sentences. COMPLIANT → cite the SOP section. GAP/PARTIAL → state EXACTLY what is missing or insufficient.
+Finding field: 1–2 precise sentences stating EXACTLY what is missing or insufficient.
 
 Return ONLY valid JSON, no markdown, no preamble, no trailing text:
 {
   "findings": [
     {
-      "section": "SOP section reference or 'Not addressed'",
-      "status": "GAP" | "PARTIAL" | "COMPLIANT",
+      "section": "SOP section where partial coverage exists, or 'Not addressed'",
+      "status": "GAP" | "PARTIAL",
       "requirement": "The requirement text as given",
-      "finding": "1-2 sentence precise observation",
+      "finding": "1-2 sentence observation of what is missing",
       "guidelineReference": "e.g. ICH Q10, Section 3.2.4",
       "confidence": "HIGH" | "MEDIUM" | "LOW"
     }
@@ -421,7 +431,7 @@ export async function auditDocument(
     )
     .join("\n\n---\n\n");
 
-  const userMessage = `Audit the document below against EVERY requirement listed. Produce exactly one finding per requirement. Do not skip any.
+  const userMessage = `Audit the document below against every requirement listed. Only report GAP and PARTIAL findings — skip requirements that are fully addressed.
 
 === DOCUMENT TEXT ===
 ${sopText.slice(0, 14000)}
@@ -456,14 +466,13 @@ export async function runGapAnalysis(
 
   const criticalGaps = findings.filter((f) => f.status === "GAP");
   const minorGaps = findings.filter((f) => f.status === "PARTIAL");
-  const compliantAreas = findings.filter((f) => f.status === "COMPLIANT");
 
   return {
-    overallScore: `${compliantAreas.length}/${findings.length} requirements met`,
+    overallScore: `${criticalGaps.length} gaps, ${minorGaps.length} partial — out of ${requirements.length} requirements checked`,
     summary,
     criticalGaps,
     minorGaps,
-    compliantAreas,
+    compliantAreas: [],
     allFindings: findings,
     analysedAt: new Date().toISOString(),
     guidelines: guidelineNames,
