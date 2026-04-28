@@ -1,5 +1,38 @@
 import type { SearchResult } from "./vector";
 
+/**
+ * Robustly extract JSON from LLM output that may contain prose preamble,
+ * markdown fences, or trailing text around the JSON object.
+ */
+function extractJSON(raw: string): string {
+  // 1. Strip markdown code fences
+  let cleaned = raw.replace(/```json\n?|\n?```/g, "").trim();
+
+  // 2. Find the first { or [ and the last matching } or ]
+  const startObj = cleaned.indexOf("{");
+  const startArr = cleaned.indexOf("[");
+
+  let start: number;
+  let closeChar: string;
+
+  if (startObj === -1 && startArr === -1) {
+    throw new Error(`No JSON found in LLM response: ${raw.slice(0, 120)}...`);
+  } else if (startArr === -1 || (startObj !== -1 && startObj < startArr)) {
+    start = startObj;
+    closeChar = "}";
+  } else {
+    start = startArr;
+    closeChar = "]";
+  }
+
+  const end = cleaned.lastIndexOf(closeChar);
+  if (end <= start) {
+    throw new Error(`Malformed JSON in LLM response: ${raw.slice(0, 120)}...`);
+  }
+
+  return cleaned.slice(start, end + 1);
+}
+
 export interface GapFinding {
   section: string;
   status: "COMPLIANT" | "PARTIAL" | "GAP";
@@ -73,7 +106,7 @@ async function summariseDocument(sopText: string, apiKey: string, isOpenRouter =
   if (!response.ok) throw new Error(`Summariser error: ${await response.text()}`);
   const data = await response.json();
   const content = data.choices[0].message.content;
-  return JSON.parse(content.replace(/```json\n?|\n?```/g, "").trim());
+  return JSON.parse(extractJSON(content));
 }
 
 // ── Pass 2: Gap analysis with document context ────────────────────────────────
@@ -179,7 +212,7 @@ ${chunksText}`;
   if (!response.ok) throw new Error(`Analysis error: ${await response.text()}`);
   const data = await response.json();
   const content = data.choices[0].message.content;
-  const parsed = JSON.parse(content.replace(/```json\n?|\n?```/g, "").trim());
+  const parsed = JSON.parse(extractJSON(content));
   return parsed.findings;
 }
 
