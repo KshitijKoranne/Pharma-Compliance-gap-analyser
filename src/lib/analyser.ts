@@ -328,7 +328,7 @@ export function generateSearchQueries(summary: DocumentSummary): string[] {
 // ── Pass 2: Gap analysis with document context ────────────────────────────────
 
 function buildAnalysisPrompt(summary: DocumentSummary): string {
-  return `You are a pharmaceutical GMP regulatory auditor conducting a gap analysis.
+  return `You are a pharmaceutical GMP regulatory auditor conducting a thorough gap analysis of a ${summary.documentType}.
 
 DOCUMENT CONTEXT:
 - Type: ${summary.documentType}
@@ -340,20 +340,43 @@ DOCUMENT CONTEXT:
 - GMP Activities: ${summary.gmpActivities.join("; ")}
 - Risk Level: ${summary.riskLevel}
 
-CRITICAL RULE — RELEVANCE GATE:
-Before evaluating each [REQ-XX] block, ask: "Does this requirement apply to a ${summary.documentType} about ${summary.gmpActivities.slice(0, 3).join(", ")}?"
-If NO → SKIP this requirement entirely. Do NOT include it in findings.
-If YES → evaluate and classify as GAP, PARTIAL, or COMPLIANT.
+INSTRUCTIONS:
+You MUST produce exactly one finding for EVERY [REQ-XX] block. Do not skip any. Each requirement has already been pre-filtered for relevance — your job is to evaluate compliance, not relevance.
 
-CLASSIFICATION:
-- GAP: Relevant requirement is completely absent or explicitly contradicted.
-- PARTIAL: Relevant requirement is partially addressed but specific sub-elements are missing.
-- COMPLIANT: Relevant requirement is explicitly addressed. Mark COMPLIANT when the document has a section satisfying the requirement, or when "have a procedure" is the requirement and this IS that procedure.
+CLASSIFICATION RULES (apply strictly):
+
+GAP — Use when:
+- The requirement is completely absent from the document
+- The document explicitly excludes or contradicts a required element
+- A specific sub-requirement (e.g. "use FMEA or similar risk tool") is not mentioned at all
+- The document mentions a topic generically but does not address the SPECIFIC requirement
+
+PARTIAL — Use when:
+- The requirement is genuinely addressed but specific mandatory sub-elements are missing
+- The document covers the general topic but lacks the detail or specificity required
+- Example: SOP has "impact assessment" but does not mention specific risk assessment TOOLS (FMEA, risk matrix) as required by ICH Q9
+
+COMPLIANT — Use ONLY when:
+- The requirement is EXPLICITLY and SPECIFICALLY addressed with sufficient detail
+- You can point to a specific SOP section that satisfies the requirement
+- The document's content matches what the guideline requires — not just the topic area
+
+CRITICAL GAPS TO CHECK (mark GAP if absent, PARTIAL if only vaguely addressed):
+1. Use of specific risk assessment tools (FMEA, fault tree, risk matrix) per ICH Q9 — generic "risk evaluation" is NOT sufficient
+2. Patient safety explicitly stated as primary consideration in impact assessment
+3. Senior management / management review of change control system performance
+4. Post-implementation effectiveness check or review after change closure
+5. Emergency, urgent, or retrospective change provisions
+6. Re-validation or re-qualification requirements after major changes
+7. Change control scope covering outsourced/contracted activities — if document EXCLUDES these, that is a GAP per ICH Q7/Q10
+8. Record retention period aligned with ICH Q7 Section 6.1 (minimum 1 year after batch expiry for APIs, or as per local regulations)
+9. CAPA linkage — changes arising from deviations/OOS must link to CAPA system
+10. Periodic review or trending of change control data
 
 Always cite exact guideline section numbers (e.g., "ICH Q10, Section 3.2.3").
-Finding field: 1–2 precise sentences. COMPLIANT → reference the SOP section. GAP/PARTIAL → name what is missing.
+Finding field: 1–2 precise sentences. For COMPLIANT — name the SOP section. For GAP/PARTIAL — state EXACTLY what is missing.
 
-Return ONLY valid JSON, no markdown, no preamble:
+Return ONLY valid JSON, no markdown, no preamble, no trailing text:
 {
   "findings": [
     {
@@ -382,7 +405,7 @@ export async function runAnalysis(
     )
     .join("\n\n---\n\n");
 
-  const userMessage = `Audit the SOP below against each requirement block. SKIP any requirement that is not relevant to this document — do NOT produce a finding for irrelevant requirements.
+  const userMessage = `Audit the SOP below against EVERY requirement block. Produce exactly one finding per [REQ-XX] block. Do not skip any — all requirements have been pre-filtered for relevance.
 
 === SOP TEXT ===
 ${sopText.slice(0, 12000)}
