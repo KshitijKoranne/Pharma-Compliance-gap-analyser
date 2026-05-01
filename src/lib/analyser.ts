@@ -91,16 +91,19 @@ export async function summariseDocument(sopText: string): Promise<DocumentSummar
     : sopText.slice(0, beginChars) + "\n\n[... middle omitted ...]\n\n" + sopText.slice(-endChars);
 
   const system = `You are a pharmaceutical regulatory expert. Read the document and produce a structured understanding.
+This application is intended for SYSTEM-LEVEL QA/GMP SOPs only, such as change control, deviation, CAPA, training, documentation control, validation governance, data integrity, supplier qualification, quality risk management, complaints, recalls, and pharmaceutical quality system procedures.
+It is NOT intended for operational SOPs, manufacturing instructions, analytical test methods, batch records, equipment operation procedures, work instructions, protocols, specifications, or execution-level documents.
+If the uploaded document appears to be outside the intended system SOP scope, clearly state that in purpose, scope, covers, excludes, and documentType. Do not force-fit operational documents into a system SOP assessment.
 Read the ENTIRE text, especially the References section.
 
 Return ONLY valid JSON, no markdown, no preamble:
 {
   "title": "Document title as written",
-  "documentType": "e.g. SOP, Policy, Protocol, Work Instruction, Batch Record, Specification",
-  "purpose": "One sentence: what this document achieves",
-  "scope": "One sentence: what operations/systems/products this covers",
+  "documentType": "Classify as System SOP, Operational SOP, Policy, Protocol, Work Instruction, Batch Record, Specification, Analytical Method, Equipment Procedure, or Other",
+  "purpose": "One sentence: what this document achieves; include an out-of-scope warning if it is not a system SOP",
+  "scope": "One sentence: what operations/systems/products this covers; include whether it appears system-level or execution-level",
   "covers": ["Specific topics, processes, activities explicitly addressed"],
-  "excludes": ["Things explicitly excluded or out of scope"],
+  "excludes": ["Things explicitly excluded or out of scope, including system SOP limitation where applicable"],
   "keyProcesses": ["Main procedural steps or workflow elements"],
   "riskLevel": "HIGH/MEDIUM/LOW",
   "regulatoryReferences": ["Every standard cited, e.g. ICH Q10, 21 CFR Part 211"],
@@ -131,13 +134,19 @@ export async function filterGuidelines(
 
   const system = `You are a pharmaceutical regulatory expert. Given a document summary and available guidelines, determine which guidelines are relevant for auditing this document.
 
+APPLICATION SCOPE:
+- This tool is for system-level QA/GMP SOPs only.
+- Examples in scope: change control, deviation, CAPA, training, documentation control, validation governance, data integrity, supplier qualification, quality risk management, complaints, recalls, and pharmaceutical quality system procedures.
+- Examples out of scope: operational SOPs, manufacturing instructions, analytical test methods, batch records, equipment operation procedures, work instructions, protocols, specifications, and execution-level documents.
+
 RULES:
 1. ONLY include guidelines directly relevant to the document's purpose and GMP activities.
 2. Pharmacopoeial test guidelines (Q4B annexes) → only for analytical test documents.
 3. Biotech guidelines (Q5A-Q5E) → only for biological product documents.
 4. Stability guidelines (Q1A-Q1E) → only for stability protocols/studies.
 5. Impurity guidelines (Q3A-Q3D) → only for impurity specs/methods.
-6. When in doubt, EXCLUDE.
+6. If the document appears outside the system SOP scope, keep relevantGuidelineIds narrow and explain that limitation in reasoning.
+7. When in doubt, EXCLUDE.
 
 Return ONLY valid JSON: { "relevantGuidelineIds": ["ID1", "ID2"], "reasoning": "..." }`;
 
@@ -178,7 +187,9 @@ function buildPerGuidelineAuditPrompt(summary: DocumentSummary, guidelineName: s
 1. A ${summary.documentType} document
 2. Sections from ${guidelineName} (the actual guideline text)
 
-Your task: Read the document thoroughly. Read every guideline section provided. For each guideline section, determine if the document adequately addresses the requirements in that section.
+Application scope: this tool is intended for system-level QA/GMP SOPs only. In-scope examples include change control, deviation, CAPA, training, documentation control, validation governance, data integrity, supplier qualification, quality risk management, complaints, recalls, and pharmaceutical quality system procedures. It is not intended for operational SOPs, manufacturing instructions, analytical methods, batch records, equipment operation procedures, work instructions, protocols, specifications, or other execution-level SOPs.
+
+Your task: Read the document thoroughly. Read every guideline section provided. For each guideline section, determine if the document adequately addresses the requirements in that section. If the document appears to be outside the intended system SOP scope, make that limitation clear in findings and avoid creating irrelevant operational findings.
 
 DOCUMENT BEING AUDITED:
 - Type: ${summary.documentType}
@@ -194,6 +205,7 @@ INSTRUCTIONS:
 3. ONLY report findings where the document has a GAP or PARTIAL compliance.
 4. SKIP sections that are not relevant to this document's purpose — e.g. if auditing a Change Control SOP, skip sections about production equipment details or packaging operations.
 5. SKIP requirements that the document fully satisfies — we only want problems.
+6. Prefer system-level governance, QA process, responsibility, documentation, review, approval, risk management, records, effectiveness check, escalation, and lifecycle requirements over execution-level operational details.
 
 CLASSIFICATION:
 - GAP: The requirement is absent, or the document explicitly excludes/contradicts it, or the document only vaguely mentions the topic without addressing the specific requirement.
