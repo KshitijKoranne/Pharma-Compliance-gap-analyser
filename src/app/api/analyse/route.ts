@@ -10,8 +10,23 @@ import { GUIDELINES } from "@/lib/guidelines-registry";
 
 export const maxDuration = 120;
 
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+
 function sse(data: object) {
   return `data: ${JSON.stringify(data)}\n\n`;
+}
+
+function isDocxFile(file: File) {
+  return file.name.toLowerCase().endsWith(".docx");
+}
+
+function getSelectedGuidelineCategories(guidelineIds: string[]) {
+  const selected = new Set(guidelineIds);
+  return new Set(
+    GUIDELINES
+      .filter((g) => selected.has(g.id))
+      .map((g) => g.category)
+  );
 }
 
 export async function POST(request: NextRequest) {
@@ -28,9 +43,36 @@ export async function POST(request: NextRequest) {
         const guidelineIdsRaw = formData.get("guidelineIds") as string | null;
 
         if (!file) { send({ type: "error", message: "No file uploaded" }); controller.close(); return; }
+        if (!isDocxFile(file)) { send({ type: "error", message: "Please upload a .docx Word document" }); controller.close(); return; }
+        if (file.size > MAX_FILE_SIZE_BYTES) { send({ type: "error", message: "File too large. Please upload a DOCX under 10 MB." }); controller.close(); return; }
         if (!guidelineIdsRaw) { send({ type: "error", message: "No guidelines selected" }); controller.close(); return; }
 
-        const userSelectedIds: string[] = JSON.parse(guidelineIdsRaw);
+        let userSelectedIds: string[];
+        try {
+          userSelectedIds = JSON.parse(guidelineIdsRaw);
+        } catch {
+          send({ type: "error", message: "Invalid guideline selection" });
+          controller.close(); return;
+        }
+
+        if (!Array.isArray(userSelectedIds) || userSelectedIds.length === 0 || !userSelectedIds.every((id) => typeof id === "string")) {
+          send({ type: "error", message: "No valid guidelines selected" });
+          controller.close(); return;
+        }
+
+        const validGuidelineIds = new Set(GUIDELINES.filter((g) => g.ingested).map((g) => g.id));
+        userSelectedIds = userSelectedIds.filter((id) => validGuidelineIds.has(id));
+
+        if (userSelectedIds.length === 0) {
+          send({ type: "error", message: "Selected guideline content is not available" });
+          controller.close(); return;
+        }
+
+        const selectedCategories = getSelectedGuidelineCategories(userSelectedIds);
+        if (selectedCategories.size > 1) {
+          send({ type: "error", message: "Please select only one regulatory framework at a time, such as ICH, EU GMP, or FDA." });
+          controller.close(); return;
+        }
 
         // ── Step 1: Parse ─────────────────────────────────────────────────
         send({ type: "progress", step: "parsing", label: "Reading document...", pct: 5 });
