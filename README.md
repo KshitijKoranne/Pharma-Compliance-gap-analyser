@@ -1,8 +1,26 @@
 # Pharma Compliance Gap Analyser
 
-AI-powered pharmaceutical regulatory compliance gap analysis. Upload an SOP (.docx), select guidelines, get a structured gap report.
+AI-powered pharmaceutical regulatory compliance gap analysis for **system-level QA/GMP SOPs**. Upload a system SOP (.docx), select one regulatory framework, and get a structured gap report.
 
 Built under **KJR Labs** by Kshitij Koranne.
+
+---
+
+## Intended Scope
+
+This tool is intended for **system SOPs** such as:
+
+- Change control
+- Deviation and CAPA
+- Training
+- Documentation control
+- Validation governance
+- Data integrity
+- Supplier qualification
+- Quality risk management
+- Complaints, recalls, and pharmaceutical quality system procedures
+
+This tool is **not intended** for operational SOPs, manufacturing instructions, analytical methods, batch records, equipment operation procedures, work instructions, protocols, specifications, or other execution-level SOPs.
 
 ---
 
