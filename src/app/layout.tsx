@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Compliance Gap Analyser — KJR Labs",
-  description: "AI-powered pharmaceutical regulatory compliance gap analysis",
+  title: "System SOP Compliance Gap Analyser — KJR Labs",
+  description: "AI-powered pharmaceutical regulatory compliance gap analysis for system-level QA/GMP SOPs",
   icons: {
     icon: "/favicon.png",
     apple: "/favicon.png",
